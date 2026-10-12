@@ -15,6 +15,7 @@ import kotlin.math.sin
  */
 class Listener(val flashesPerSec: Double) {
     data class Result(
+        val found: Boolean = false,
         val tSec: Double,
         val best: Double, val bestX: Int, val bestY: Int,   // best fine zone (sensor grid)
         val coarse: Double,                                 // best of the 8x6 big zones
@@ -104,7 +105,15 @@ class Listener(val flashesPerSec: Double) {
     }
 
     companion object {
-        /** Strength above which we say "we hear us". To be tuned from tests. */
-        const val FOUND = 40.0
+        /**
+         * Strength needed to say "we hear us". From the first test (Oct 11):
+         * with no signal, the best of ~3000 small spots reached up to ~230 by
+         * chance, big zones ~45, the whole picture ~27; with our light, all
+         * three went into the thousands.
+         */
+        const val FOUND_SPOT = 500.0
+        const val FOUND_ZONE = 150.0
+        const val FOUND_WHOLE = 100.0
+        const val FOUND = FOUND_SPOT
     }
 }

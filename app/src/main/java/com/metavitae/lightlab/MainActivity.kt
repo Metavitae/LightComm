@@ -416,16 +416,16 @@ class MainActivity : Activity() {
                 l.add(ts, fine)
                 frames++
                 if (frames % 15 == 0) l.analyze()?.let { r ->
-                    val found = r.best >= Listener.FOUND || r.coarse >= Listener.FOUND || r.whole >= Listener.FOUND
+                    val found = r.best >= Listener.FOUND_SPOT || r.coarse >= Listener.FOUND_ZONE || r.whole >= Listener.FOUND_WHOLE
                     log.append(String.format(Locale.US, "%.1f,%.1f,%d,%d,%.1f,%.1f,%d\n",
                         (SystemClock.elapsedRealtime() - startedAt) / 1000.0, r.best, r.bestX, r.bestY, r.coarse, r.whole, if (found) 1 else 0))
                     runOnUiThread {
                         if (!alive) return@runOnUiThread
                         heat.show(r, c.sensorOrientation, found)
-                        status.text = if (found) "WE HEAR US!  strength ${r.best.coerceAtLeast(maxOf(r.coarse, r.whole)).toInt()}"
-                                      else "Listening...  strongest hint ${maxOf(r.best, r.coarse, r.whole).toInt()} (need ${Listener.FOUND.toInt()})"
+                        status.text = if (found) "WE HEAR US!  strength ${maxOf(r.best, r.coarse, r.whole).toInt()}"
+                                      else "Listening...  not heard yet"
                         status.setTextColor(if (found) Color.rgb(80, 255, 120) else Color.rgb(255, 200, 0))
-                        detail.text = String.format(Locale.US, "Best small spot: %.0f   Best big zone: %.0f   Whole picture: %.0f", r.best, r.coarse, r.whole)
+                        detail.text = String.format(Locale.US, "Best small spot: %.0f (need 500)   Best big zone: %.0f (need 150)   Whole picture: %.0f (need 100)", r.best, r.coarse, r.whole)
                         val now = SystemClock.elapsedRealtime()
                         if (found && now - lastBeep > 450) { lastBeep = now; tone?.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150) }
                     }
@@ -442,7 +442,7 @@ class MainActivity : Activity() {
             }
         }
         fun save(): String {
-            val head = Results.header("Listen for us") + settings.text + "\nFound when strength >= ${Listener.FOUND}\n\nEVERY HALF SECOND\n"
+            val head = Results.header("Listen for us") + settings.text + "\nFound when small spot >= ${Listener.FOUND_SPOT}, big zone >= ${Listener.FOUND_ZONE} or whole picture >= ${Listener.FOUND_WHOLE}\n\nEVERY HALF SECOND\n"
             return Results.save(this, "listen", head + log)
         }
 
@@ -496,7 +496,7 @@ class MainActivity : Activity() {
             val ch = h / (if (swap) CamSession.ZX else CamSession.ZY)
             for (y in 0 until CamSession.ZY) for (x in 0 until CamSession.ZX) {
                 val v = m[y * CamSession.ZX + x]
-                if (v < 10f) continue
+                if (v < 100f) continue
                 val a = ((v / Listener.FOUND.toFloat()).coerceAtMost(1f) * 160).toInt()
                 cell.color = Color.argb(a, 80, 255, 120)
                 val (sx, sy) = toScreen(x + 0.5f, y + 0.5f)
