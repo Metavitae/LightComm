@@ -70,14 +70,31 @@ object MessageFormat {
         val data = text.toByteArray(Charsets.US_ASCII).take(40).toByteArray()
         val ks = keystream(pass, nonce, data.size + 2)
         val out = ArrayList<Int>()
-        START.forEach { out.add(it) }
         fun bitsOf(v: Int, n: Int) { for (i in n - 1 downTo 0) out.add((v shr i) and 1) }
         bitsOf(tag(pass, nonce), 16)
         bitsOf(nonce, 16)
         bitsOf(data.size xor (ks[0].toInt() and 0xff), 8)
         data.forEachIndexed { i, b -> bitsOf((b.toInt() xor ks[i + 1].toInt()) and 0xff, 8) }
         bitsOf(crc8(data) xor (ks[data.size + 1].toInt() and 0xff), 8)
-        return out.toIntArray()
+        // Error correction: every 4 bits become 7 (Hamming), so one wrong bit in each 7 is repaired.
+        val coded = ArrayList<Int>()
+        START.forEach { coded.add(it) }
+        for (i in out.indices step 4) coded.addAll(hammingEncode(out[i], out[i + 1], out[i + 2], out[i + 3]).toList())
+        return coded.toIntArray()
+    }
+
+    fun hammingEncode(d1: Int, d2: Int, d3: Int, d4: Int): IntArray =
+        intArrayOf(d1 xor d2 xor d4, d1 xor d3 xor d4, d1, d2 xor d3 xor d4, d2, d3, d4)
+
+    /** 7 received bits -> 4 data bits, repairing one wrong bit. */
+    fun hammingDecode(c: IntArray): IntArray {
+        val s1 = c[0] xor c[2] xor c[4] xor c[6]
+        val s2 = c[1] xor c[2] xor c[5] xor c[6]
+        val s3 = c[3] xor c[4] xor c[5] xor c[6]
+        val pos = s1 + 2 * s2 + 4 * s3
+        val r = c.copyOf()
+        if (pos > 0) r[pos - 1] = r[pos - 1] xor 1
+        return intArrayOf(r[2], r[4], r[5], r[6])
     }
 }
 
@@ -205,12 +222,16 @@ class MessageDecoder(private val sp: MessageFormat.Speed, private val pass: Stri
             tau += step
         }
         cands.sortByDescending { it.first }
+        val topScore = cands.firstOrNull()?.first ?: return null
         val tried = ArrayList<Double>()
         var bestFound: Decoded? = null
-        for ((_, c) in cands.take(40)) {
+        for ((score, c) in cands.take(40)) {
             if (tried.any { abs(it - c) < sp.bitSec / 2 }) continue
             tried.add(c)
-            val d = decodeAt(c) ?: continue
+            var d = decodeAt(c) ?: continue
+            // "Not for us" only counts from a near-perfect start mark, never from a lucky match inside a message.
+            if (!d.forUs && (score < 0.85 * start.size || score < topScore - 1.0)) continue
+            if (!d.forUs) d = d.copy()
             // A message for us always wins over a foreign one.
             if (bestFound == null || (d.forUs && !bestFound.forUs) || (d.forUs == bestFound.forUs && d.atSec > bestFound.atSec)) bestFound = d
         }
@@ -220,14 +241,22 @@ class MessageDecoder(private val sp: MessageFormat.Speed, private val pass: Stri
     private fun decodeAt(t0: Double): Decoded? {
         var pos = t0 + MessageFormat.START.size * sp.bitSec
         val conf = ArrayList<Double>()
+        val pending = ArrayDeque<Int>()
         fun readBits(n: Int): Int? {
             var b = 0
             for (i in 0 until n) {
-                if (pos + sp.bitSec > t.last()) return null
-                val (m, _) = metric(0, pos)
-                conf.add(abs(m))
-                b = (b shl 1) or (if (m > 0) 1 else 0)
-                pos += sp.bitSec
+                if (pending.isEmpty()) {
+                    val raw = IntArray(7)
+                    for (j in 0 until 7) {
+                        if (pos + sp.bitSec > t.last()) return null
+                        val (m, _) = metric(0, pos)
+                        conf.add(abs(m))
+                        raw[j] = if (m > 0) 1 else 0
+                        pos += sp.bitSec
+                    }
+                    MessageFormat.hammingDecode(raw).forEach { pending.addLast(it) }
+                }
+                b = (b shl 1) or pending.removeFirst()
             }
             return b
         }
