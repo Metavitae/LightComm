@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.SurfaceTexture
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Choreographer
 import android.view.TextureView
 import android.view.View
@@ -33,6 +34,11 @@ class MainActivity : Activity() {
         // adb shortcut for CC: am start ... --es mode facts  (skips the safety screen)
         when (intent.getStringExtra("mode")) {
             "facts" -> withCamera { showFacts() }
+            // adb: --es mode listen --ei rate 10     (rate = changes per second)
+            "listen" -> withCamera { showListen(intent.getIntExtra("rate", 10).toDouble()) }
+            // adb: --es mode send --ei pattern 0 --ei rate 10 --ei seconds 30
+            "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
+                intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
             else -> showMenu()
         }
@@ -103,6 +109,7 @@ class MainActivity : Activity() {
             button("3. Send with the screen") { onMenu = false; showScreenSetup() }
             button("4. Send with infrared") { onMenu = false; showIr() }
             button("5. Receive with the camera") { onMenu = false; withCamera { showReceiver() } }
+            button("6. Listen for us (no aiming needed)") { onMenu = false; withCamera { showListen(10.0) } }
         }
     }
 
@@ -133,7 +140,9 @@ class MainActivity : Activity() {
     private val speeds = listOf(2.0, 4.0, 10.0, 20.0, 30.0, 40.0, 60.0)
     private val speedNames = speeds.map { "${it.toInt()} changes per second" }
 
-    private fun showTorch() {
+    /** auto = (pattern, changes per second, seconds): start right away (adb "send" mode). */
+    private fun showTorch(auto: Triple<Int, Double, Double>? = null) {
+        onMenu = false
         val tc = torchCamera(this)
         val sender = TorchSender(this)
         stopCurrent = { sender.running = false }
@@ -141,22 +150,23 @@ class MainActivity : Activity() {
         lateinit var pattern: () -> Int
         lateinit var speed: () -> Int
         lateinit var length: () -> Int
-        val lengths = listOf(10.0, 30.0, 120.0, 300.0)
+        val lengths = listOf(10.0, 30.0, 120.0, 300.0, 600.0)
+        fun go(pat: Int, rate: Double, secs: Double) {
+            Thread {
+                for (i in 3 downTo 1) { runOnUiThread { status?.text = "Starting in $i..." }; Thread.sleep(1000) }
+                val r = sender.run(pat, rate, secs) { s -> runOnUiThread { status?.text = s } }
+                val path = Results.save(this@MainActivity, "flashlight", r)
+                runOnUiThread { status?.text = "Done. Saved: $path" }
+            }.start()
+        }
         scrollPage {
             text("Send with the flashlight", 24f, bold = true)
             text(if (tc == null) "This phone has no flashlight an app can use."
                  else "Flashlight brightness steps on this phone: ${tc.second}" + if (tc.second <= 1) " (on/off only)" else "", 14f, color = Color.LTGRAY)
             pattern = choice("Pattern", TorchSender.PATTERN_NAMES)
             speed = choice("Speed", speedNames, 2)
-            length = choice("How long", listOf("10 seconds", "30 seconds", "2 minutes", "5 minutes (heat test)"))
-            button("Start (3 second countdown)") {
-                Thread {
-                    for (i in 3 downTo 1) { runOnUiThread { status?.text = "Starting in $i..." }; Thread.sleep(1000) }
-                    val r = sender.run(pattern(), speeds[speed()], lengths[length()]) { s -> runOnUiThread { status?.text = s } }
-                    val path = Results.save(this@MainActivity, "flashlight", r)
-                    runOnUiThread { status?.text = "Done. Saved: $path" }
-                }.start()
-            }
+            length = choice("How long", listOf("10 seconds", "30 seconds", "2 minutes", "5 minutes (heat test)", "10 minutes (beacon)"))
+            button("Start (3 second countdown)") { go(pattern(), speeds[speed()], lengths[length()]) }
             button("Stop") { sender.running = false }
             if (tc != null && tc.second > 1) button("Step through brightness levels") {
                 Thread {
@@ -167,6 +177,7 @@ class MainActivity : Activity() {
             }
             status = text("", 16f, color = Color.rgb(255, 200, 0))
         }
+        if (auto != null) go(auto.first, auto.second, auto.third)
     }
 
     // -------------------------------------------------------------------- IR
@@ -349,6 +360,153 @@ class MainActivity : Activity() {
         }
         live.post(ticker)
         start()
+    }
+
+
+    // ------------------------------------------------------------ listen for us
+
+    private fun showListen(startRate: Double) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val rates = listOf(4.0, 10.0, 20.0)
+        var rateIdx = rates.indexOf(startRate).let { if (it < 0) 1 else it }
+        val exposures = listOf<Long?>(null, 16_000_000L, 4_000_000L, 1_000_000L)  // null = automatic, then locked
+        var expIdx = 0
+        val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
+
+        val col = column()
+        val sv = ScrollView(this)
+        sv.setBackgroundColor(Color.BLACK)
+        sv.addView(col)
+        col.text("Listen for us", 24f, bold = true)
+        val status = col.text("Starting camera...", 22f, bold = true, color = Color.rgb(255, 200, 0))
+        val box = android.widget.FrameLayout(this)
+        val tv = TextureView(this)
+        val heat = Heat(this)
+        box.addView(tv, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        box.addView(heat, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        col.text("Camera view. No need to aim exactly: just the general direction.", 13f, color = Color.LTGRAY)
+        col.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300)))
+        val detail = col.text("", 13f, color = Color.LTGRAY)
+        val settings = col.text("", 13f, color = Color.LTGRAY)
+        setContentView(sv)
+
+        var cam: CamSession? = null
+        var listener = Listener(rates[rateIdx] / 2)
+        val log = StringBuilder("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n")
+        var startedAt = 0L
+        var lastBeep = 0L
+        var alive = true
+
+        fun describe() {
+            settings.text = "${cams[0].second}\nListening for: ${rates[rateIdx].toInt()} changes per second\n" +
+                "Exposure: " + (exposures[expIdx]?.let { "fixed ${it / 1000} microseconds" } ?: "automatic, then locked")
+        }
+        fun start() {
+            cam?.close()
+            listener = Listener(rates[rateIdx] / 2)
+            val l = listener
+            var frames = 0
+            val c = CamSession(this, cams[0].first, tv) { }
+            val e = exposures[expIdx]
+            c.manual = e != null; c.expNs = e ?: 1_000_000L; c.iso = 400; c.fps = 30
+            c.onError = { err -> runOnUiThread { status.text = "Camera problem: $err" } }
+            c.zoneSink = { ts, fine ->
+                l.add(ts, fine)
+                frames++
+                if (frames % 15 == 0) l.analyze()?.let { r ->
+                    val found = r.best >= Listener.FOUND || r.coarse >= Listener.FOUND || r.whole >= Listener.FOUND
+                    log.append(String.format(Locale.US, "%.1f,%.1f,%d,%d,%.1f,%.1f,%d\n",
+                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, r.best, r.bestX, r.bestY, r.coarse, r.whole, if (found) 1 else 0))
+                    runOnUiThread {
+                        if (!alive) return@runOnUiThread
+                        heat.show(r, c.sensorOrientation, found)
+                        status.text = if (found) "WE HEAR US!  strength ${r.best.coerceAtLeast(maxOf(r.coarse, r.whole)).toInt()}"
+                                      else "Listening...  strongest hint ${maxOf(r.best, r.coarse, r.whole).toInt()} (need ${Listener.FOUND.toInt()})"
+                        status.setTextColor(if (found) Color.rgb(80, 255, 120) else Color.rgb(255, 200, 0))
+                        detail.text = String.format(Locale.US, "Best small spot: %.0f   Best big zone: %.0f   Whole picture: %.0f", r.best, r.coarse, r.whole)
+                        val now = SystemClock.elapsedRealtime()
+                        if (found && now - lastBeep > 450) { lastBeep = now; tone?.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150) }
+                    }
+                }
+            }
+            cam = c
+            describe()
+            runOnUiThread { status.text = "Listening... (needs 4 seconds to start)" }
+            if (tv.isAvailable) c.open {} else tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(s: SurfaceTexture, w: Int, h: Int) { c.open {} }
+                override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {}
+                override fun onSurfaceTextureDestroyed(s: SurfaceTexture) = true
+                override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
+            }
+        }
+        fun save(): String {
+            val head = Results.header("Listen for us") + settings.text + "\nFound when strength >= ${Listener.FOUND}\n\nEVERY HALF SECOND\n"
+            return Results.save(this, "listen", head + log)
+        }
+
+        col.button("Save results (and keep going)") { val p = save(); status.text = "Saved: $p"; log.setLength(0); log.append("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n") }
+        col.button("Change rhythm to listen for") { rateIdx = (rateIdx + 1) % rates.size; start() }
+        col.button("Change exposure") { expIdx = (expIdx + 1) % exposures.size; start() }
+
+        stopCurrent = {
+            alive = false
+            if (log.count { it == '\n' } > 3) save()
+            cam?.close(); cam = null
+            tone?.release()
+        }
+        startedAt = SystemClock.elapsedRealtime()
+        start()
+    }
+
+    /** Draws, over the camera view, the zones that carry our rhythm. */
+    class Heat(ctx: android.content.Context) : View(ctx) {
+        private var map: FloatArray? = null
+        private var orient = 90
+        private var bx = 0
+        private var by = 0
+        private var found = false
+        private val cell = Paint()
+        private val ring = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 6f; color = Color.rgb(80, 255, 120) }
+
+        fun show(r: Listener.Result, orientation: Int, f: Boolean) {
+            map = r.map; orient = orientation; bx = r.bestX; by = r.bestY; found = f
+            invalidate()
+        }
+
+        /** Sensor-grid zone to normalized screen position, for a phone held upright. */
+        private fun toScreen(x: Float, y: Float): Pair<Float, Float> {
+            val nx = x / CamSession.ZX
+            val ny = y / CamSession.ZY
+            return when (orient) {
+                90 -> (1 - ny) to nx
+                270 -> ny to (1 - nx)
+                180 -> (1 - nx) to (1 - ny)
+                else -> nx to ny
+            }
+        }
+
+        override fun onDraw(c: Canvas) {
+            val m = map ?: return
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val swap = orient == 90 || orient == 270
+            val cw = w / (if (swap) CamSession.ZY else CamSession.ZX)
+            val ch = h / (if (swap) CamSession.ZX else CamSession.ZY)
+            for (y in 0 until CamSession.ZY) for (x in 0 until CamSession.ZX) {
+                val v = m[y * CamSession.ZX + x]
+                if (v < 10f) continue
+                val a = ((v / Listener.FOUND.toFloat()).coerceAtMost(1f) * 160).toInt()
+                cell.color = Color.argb(a, 80, 255, 120)
+                val (sx, sy) = toScreen(x + 0.5f, y + 0.5f)
+                c.drawRect(sx * w - cw / 2, sy * h - ch / 2, sx * w + cw / 2, sy * h + ch / 2, cell)
+            }
+            if (found) {
+                val (sx, sy) = toScreen(bx + 0.5f, by + 0.5f)
+                c.drawCircle(sx * w, sy * h, 40f, ring)
+            }
+        }
     }
 
     /** Small live chart of the brightest-spot value. */

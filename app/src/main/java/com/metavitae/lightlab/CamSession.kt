@@ -46,6 +46,13 @@ class CamSession(
     var fps = 30
     var torch = false
     var onError: (String) -> Unit = {}
+
+    /** When set, also receives each frame as a fine grid of zone brightnesses (ZX x ZY, sensor orientation). */
+    var zoneSink: ((Long, FloatArray) -> Unit)? = null
+
+    /** How the sensor is turned relative to the phone held upright (0, 90, 180 or 270). */
+    val sensorOrientation: Int =
+        ctx.getSystemService(CameraManager::class.java).getCameraCharacteristics(camId)[CameraCharacteristics.SENSOR_ORIENTATION] ?: 90
     var size: Size = Size(640, 480)
         private set
 
@@ -175,10 +182,14 @@ class CamSession(
             var total = 0L
             var n = 0
             var peak = 0
+            val sink = zoneSink
+            val fine = if (sink != null) FloatArray(ZX * ZY) else null
+            val fineN = if (sink != null) IntArray(ZX * ZY) else null
             var y = 0
             while (y < h) {
                 val row = y * rs
                 val by = minOf(y / bh, gy - 1)
+                val fy = minOf(y * ZY / h, ZY - 1) * ZX
                 var x = 0
                 while (x < w) {
                     val v = buf.get(row + x * ps).toInt() and 0xff
@@ -188,6 +199,11 @@ class CamSession(
                     total += v
                     n++
                     if (v > peak) peak = v
+                    if (fine != null) {
+                        val fi = fy + minOf(x * ZX / w, ZX - 1)
+                        fine[fi] += v.toFloat()
+                        fineN!![fi]++
+                    }
                     x += 2
                 }
                 y += 2
@@ -197,6 +213,10 @@ class CamSession(
             for (i in sums.indices) {
                 val m = if (counts[i] > 0) sums[i] / counts[i] else 0
                 if (m > best) { best = m; bi = i }
+            }
+            if (sink != null && fine != null) {
+                for (i in fine.indices) if (fineN!![i] > 0) fine[i] /= fineN[i]
+                sink(img.timestamp, fine)
             }
             onFrame(Frame(img.timestamp, best, bi % gx, bi / gx, peak, (total / maxOf(1, n)).toInt(),
                 lastExp, lastIso, lastSkew, lastFlash))
@@ -217,6 +237,9 @@ class CamSession(
     }
 
     companion object {
+        const val ZX = 64
+        const val ZY = 48
+
         /** Back cameras an app may open, with a plain label. */
         fun backCameras(ctx: Context): List<Pair<String, String>> {
             val cm = ctx.getSystemService(CameraManager::class.java)
