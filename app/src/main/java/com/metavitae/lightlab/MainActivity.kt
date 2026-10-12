@@ -433,8 +433,11 @@ class MainActivity : Activity() {
         var alive = true
         val message = col.text("", 24f, bold = true, color = Color.rgb(120, 200, 255))
         // Once we hear us, follow that spot/zone and try to read a message from it.
-        var lock: Pair<Int, Int>? = null   // (kind, index)
-        var decoders = MessageFormat.SPEEDS.map { MessageDecoder(it, pass) }
+        // Once we hear us, read from three places at once: best small spot, best big zone, whole picture.
+        var locked = false
+        val lockIdx = IntArray(3)
+        fun makeDecoders() = (0 until 3).flatMap { MessageFormat.SPEEDS.map { sp -> MessageDecoder(sp, pass) } }
+        var decoders = makeDecoders()   // index = channel * 2 + speed
         val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
         var decoding = false
         var lastText = ""
@@ -455,15 +458,18 @@ class MainActivity : Activity() {
             c.zoneSink = { ts, fine ->
                 l.add(ts, fine)
                 frames++
-                lock?.let { (kind, idx) ->
-                    val value = Listener.channel(fine, kind, idx)
-                    decoders.forEach { it.add(ts / 1e9, value) }
+                if (locked) {
+                    for (ch in 0 until 3) {
+                        val value = Listener.channel(fine, ch, lockIdx[ch])
+                        decoders[ch * 2].add(ts / 1e9, value)
+                        decoders[ch * 2 + 1].add(ts / 1e9, value)
+                    }
                     if (frames % 60 == 0 && !decoding) {
                         decoding = true
                         val snaps = decoders.map { it.copy() }
                         worker.execute {
-                            val got = snaps.mapIndexedNotNull { i, d -> d.tryDecode()?.let { MessageFormat.SPEEDS[i] to it } }
-                                .maxByOrNull { it.second.atSec }
+                            val all = snaps.mapIndexedNotNull { i, d -> d.tryDecode()?.let { MessageFormat.SPEEDS[i % 2] to it } }
+                            val got = all.filter { it.second.forUs }.maxByOrNull { it.second.atSec } ?: all.maxByOrNull { it.second.atSec }
                             decoding = false
                             if (got != null) runOnUiThread {
                                 if (!alive) return@runOnUiThread
@@ -482,12 +488,16 @@ class MainActivity : Activity() {
                 }
                 if (frames % 15 == 0) l.analyze()?.let { r ->
                     val found = r.best >= Listener.FOUND_SPOT || r.coarse >= Listener.FOUND_ZONE || r.whole >= Listener.FOUND_WHOLE
-                    if (found && lock == null) {
-                        val scores = listOf(r.best / Listener.FOUND_SPOT, r.coarse / Listener.FOUND_ZONE, r.whole / Listener.FOUND_WHOLE)
-                        val kind = scores.indices.maxByOrNull { scores[it] }!!
-                        lock = kind to when (kind) { 0 -> r.bestY * CamSession.ZX + r.bestX; 1 -> r.coarseIdx; else -> 0 }
-                        log.append("LOCKED on ${listOf("small spot", "big zone", "whole picture")[kind]} ${lock!!.second}\n")
-                        runOnUiThread { message.text = "Locked on. Reading any message..." }
+                    if (found) {
+                        // Follow the strongest spot and zone while the beacon lasts.
+                        val spot = r.bestY * CamSession.ZX + r.bestX
+                        if (!locked || spot != lockIdx[0]) { lockIdx[0] = spot; decoders[0].reset(); decoders[1].reset() }
+                        if (!locked || r.coarseIdx != lockIdx[1]) { lockIdx[1] = r.coarseIdx; decoders[2].reset(); decoders[3].reset() }
+                        if (!locked) {
+                            locked = true
+                            log.append("LOCKED on spot ${lockIdx[0]}, zone ${lockIdx[1]} and the whole picture\n")
+                            runOnUiThread { message.text = "Locked on. Reading any message..." }
+                        }
                     }
                     log.append(String.format(Locale.US, "%.1f,%.1f,%d,%d,%.1f,%.1f,%d\n",
                         (SystemClock.elapsedRealtime() - startedAt) / 1000.0, r.best, r.bestX, r.bestY, r.coarse, r.whole, if (found) 1 else 0))
@@ -515,19 +525,19 @@ class MainActivity : Activity() {
         }
         fun save(): String {
             val head = Results.header("Listen for us") + settings.text + "\nFound when small spot >= ${Listener.FOUND_SPOT}, big zone >= ${Listener.FOUND_ZONE} or whole picture >= ${Listener.FOUND_WHOLE}\n\nEVERY HALF SECOND\n"
-            return Results.save(this, "listen", head + log + "\nRAW CHANNEL (fast decoder)\n" + decoders[1].dump())
+            return Results.save(this, "listen", head + log + "\nRAW CHANNEL (big zone, fast decoder)\n" + decoders[3].dump())
         }
 
         col.button("Save results (and keep going)") { val p = save(); status.text = "Saved: $p"; log.setLength(0); log.append("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n") }
         col.button("Listen again (forget where we heard us)") {
-            lock = null; decoders.forEach { it.reset() }; message.text = ""; lastText = ""
+            locked = false; decoders.forEach { it.reset() }; message.text = ""; lastText = ""
         }
         col.text("Passphrase (same as the sender)", 14f, color = Color.LTGRAY)
         val passField = EditText(this).apply { setText(pass); setTextColor(Color.WHITE) }
         col.addView(passField)
         col.button("Use this passphrase") {
             savePass(passField.text.toString()); pass = savedPass()
-            lock = null; decoders = MessageFormat.SPEEDS.map { MessageDecoder(it, pass) }; message.text = ""; lastText = ""
+            locked = false; decoders = makeDecoders(); message.text = ""; lastText = ""
             start()
         }
         col.button("Change exposure") { expIdx = (expIdx + 1) % exposures.size; start() }
