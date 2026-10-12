@@ -49,6 +49,10 @@ class MainActivity : Activity() {
                 DuplexFormat.BIT_FRAMES = intent.getIntExtra("bit", DuplexFormat.BIT_FRAMES)
                 withCamera { showDuplex(if (intent.getStringExtra("role") == "answerer") DuplexFormat.ANSWERER else DuplexFormat.CALLER,
                     intent.getStringExtra("text"), intent.getIntExtra("after", 8)) } }
+            // adb: --es mode calib-send|calib-recv [--es pass W] [--ei iso 100] [--ei secs 40]
+            "calib-send" -> { intent.getStringExtra("pass")?.let { savePass(it) }; showCalibSend(true) }
+            "calib-recv" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                withCamera { showCalibRecv(intent.getIntExtra("iso", 100), intent.getIntExtra("secs", 40)) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -126,6 +130,8 @@ class MainActivity : Activity() {
             button("3. Send with the screen") { onMenu = false; showScreenSetup() }
             button("4. Send with infrared") { onMenu = false; showIr() }
             button("5. Receive with the camera") { onMenu = false; withCamera { showReceiver() } }
+            button("8. Calibrate: send brightness steps") { onMenu = false; showCalibSend(false) }
+            button("9. Calibrate: measure brightness steps") { onMenu = false; withCamera { showCalibRecv(100, 40) } }
             button("7. Two-way: talk and listen at once") { onMenu = false; withCamera { showDuplex(DuplexFormat.CALLER, null, 0) } }
             button("6. Listen for us (no aiming needed)") { onMenu = false; withCamera { showListen(10.0) } }
         }
@@ -728,6 +734,74 @@ class MainActivity : Activity() {
             override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
         }
         if (autoText != null) tv.postDelayed({ if (alive) send(autoText) }, autoAfter * 1000L)
+    }
+
+
+    // -------------------------------------------------------------- calibration
+
+    private fun showCalibSend(auto: Boolean) {
+        onMenu = false
+        val sender = CalibSender(this)
+        stopCurrent = { sender.running = false }
+        var status: TextView? = null
+        fun go() = Thread {
+            for (i in 3 downTo 1) { runOnUiThread { status?.text = "Starting in $i..." }; Thread.sleep(1000) }
+            val r = sender.run(savedPass()) { st -> runOnUiThread { status?.text = st } }
+            val path = Results.save(this, "calib-send", r)
+            runOnUiThread { status?.text = "Done. Saved: $path" }
+        }.start()
+        scrollPage {
+            text("Calibrate: send brightness steps", 22f, bold = true)
+            text("Beacon, then 5 brightness steps (off, 1/4, 1/2, 3/4, full) made by keeping the flashlight on for part of each picture. About ${CalibFormat.totalSec.toInt()} seconds. Passphrase: ${savedPass()}", 14f)
+            button("Start") { go() }
+            button("Stop") { sender.running = false }
+            status = text("", 16f, color = Color.rgb(255, 200, 0))
+        }
+        if (auto) go()
+    }
+
+    private fun showCalibRecv(iso: Int, secs: Int) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val rx = CalibReceiver(savedPass())
+        val col = column()
+        val sv = ScrollView(this)
+        sv.setBackgroundColor(Color.BLACK)
+        sv.addView(col)
+        col.text("Calibrate: measure", 22f, bold = true)
+        val status = col.text("Recording the room first...", 18f, bold = true, color = Color.rgb(255, 200, 0))
+        val tv = TextureView(this)
+        col.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200)))
+        val out = col.text("", 13f)
+        setContentView(sv)
+        val c = CamSession(this, cams[0].first, tv) { }
+        // One picture = one on/off period of the sender (1/15 s), exposed the whole time.
+        c.manual = true; c.fps = 15; c.expNs = 66_000_000L; c.iso = iso
+        c.onError = { e -> runOnUiThread { status.text = "Camera problem: $e" } }
+        c.zoneSink = { ts, fine -> rx.add(ts, fine) }
+        var alive = true
+        var done = false
+        fun finish() {
+            if (done) return
+            done = true
+            status.text = "Working it out..."
+            Thread {
+                val r = rx.analyze()
+                val path = Results.save(this, "calib-recv", Results.header("Calibration receiver") + "Picture: 1/15 s, fully exposed, ISO $iso\n\n" + r)
+                runOnUiThread { if (alive) { status.text = r.lineSequence().first(); out.text = r + "\nSaved: $path" } }
+            }.start()
+        }
+        col.button("Work it out now") { finish() }
+        stopCurrent = { alive = false; c.close() }
+        if (tv.isAvailable) c.open {} else tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { c.open {} }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        tv.postDelayed({ if (alive) { status.text = "Recording... (start the sender now if not yet)" } }, 3000)
+        tv.postDelayed({ if (alive) { c.close(); finish() } }, secs * 1000L)
     }
 
     /** Small live chart of the brightest-spot value. */
