@@ -37,6 +37,9 @@ class MainActivity : Activity() {
             // adb: --es mode listen --ei rate 10     (rate = changes per second)
             "listen" -> withCamera { showListen(intent.getIntExtra("rate", 10).toDouble()) }
             // adb: --es mode send --ei pattern 0 --ei rate 10 --ei seconds 30
+            // adb: --es mode message --es text HELLO --ei speed 0 --ei repeats 2   (speed 0 = 2 bits/s, 1 = 4 bits/s)
+            "message" -> showTorch(autoMessage = Triple(intent.getStringExtra("text") ?: "HELLO",
+                intent.getIntExtra("speed", 0), intent.getIntExtra("repeats", 2)))
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -141,11 +144,12 @@ class MainActivity : Activity() {
     private val speedNames = speeds.map { "${it.toInt()} changes per second" }
 
     /** auto = (pattern, changes per second, seconds): start right away (adb "send" mode). */
-    private fun showTorch(auto: Triple<Int, Double, Double>? = null) {
+    private fun showTorch(auto: Triple<Int, Double, Double>? = null, autoMessage: Triple<String, Int, Int>? = null) {
         onMenu = false
         val tc = torchCamera(this)
         val sender = TorchSender(this)
-        stopCurrent = { sender.running = false }
+        val msgSender = MessageSender(this)
+        stopCurrent = { sender.running = false; msgSender.running = false }
         var status: TextView? = null
         lateinit var pattern: () -> Int
         lateinit var speed: () -> Int
@@ -167,7 +171,15 @@ class MainActivity : Activity() {
             speed = choice("Speed", speedNames, 2)
             length = choice("How long", listOf("10 seconds", "30 seconds", "2 minutes", "5 minutes (heat test)", "10 minutes (beacon)"))
             button("Start (3 second countdown)") { go(pattern(), speeds[speed()], lengths[length()]) }
-            button("Stop") { sender.running = false }
+            button("Stop") { sender.running = false; msgSender.running = false }
+            text("Send a message", 20f, bold = true)
+            val msgField = EditText(context).apply {
+                setText("HELLO"); setTextColor(Color.WHITE); setHintTextColor(Color.GRAY); hint = "Short text, plain letters"
+            }
+            addView(msgField)
+            for ((i, sp) in MessageFormat.SPEEDS.withIndex()) button("Send message at ${sp.name}") {
+                sendMessage(msgSender, msgField.text.toString(), i, 2) { st -> status?.text = st }
+            }
             if (tc != null && tc.second > 1) button("Step through brightness levels") {
                 Thread {
                     val r = sender.brightnessSteps { s -> runOnUiThread { status?.text = s } }
@@ -178,6 +190,17 @@ class MainActivity : Activity() {
             status = text("", 16f, color = Color.rgb(255, 200, 0))
         }
         if (auto != null) go(auto.first, auto.second, auto.third)
+        autoMessage?.let { (txt, sp, rep) -> sendMessage(msgSender, txt, sp, rep) { st -> status?.text = st } }
+    }
+
+    private fun sendMessage(ms: MessageSender, text: String, speed: Int, repeats: Int, show: (String) -> Unit) {
+        Thread {
+            for (i in 3 downTo 1) { runOnUiThread { show("Message starts in $i...") }; Thread.sleep(1000) }
+            runOnUiThread { show("Sending beacon, then the message...") }
+            val r = ms.run(text.uppercase(), MessageFormat.SPEEDS[speed], repeats) { st -> runOnUiThread { show(st) } }
+            val path = Results.save(this, "message-sent", r)
+            runOnUiThread { show("Done. Saved: $path") }
+        }.start()
     }
 
     // -------------------------------------------------------------------- IR
@@ -398,6 +421,13 @@ class MainActivity : Activity() {
         var startedAt = 0L
         var lastBeep = 0L
         var alive = true
+        val message = col.text("", 24f, bold = true, color = Color.rgb(120, 200, 255))
+        // Once we hear us, follow that spot/zone and try to read a message from it.
+        var lock: Pair<Int, Int>? = null   // (kind, index)
+        val decoders = MessageFormat.SPEEDS.map { MessageDecoder(it) }
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        var decoding = false
+        var lastText = ""
 
         fun describe() {
             settings.text = "${cams[0].second}\nListening for: ${rates[rateIdx].toInt()} changes per second\n" +
@@ -415,8 +445,39 @@ class MainActivity : Activity() {
             c.zoneSink = { ts, fine ->
                 l.add(ts, fine)
                 frames++
+                lock?.let { (kind, idx) ->
+                    val value = Listener.channel(fine, kind, idx)
+                    decoders.forEach { it.add(ts / 1e9, value) }
+                    if (frames % 60 == 0 && !decoding) {
+                        decoding = true
+                        val snaps = decoders.map { it.copy() }
+                        worker.execute {
+                            val got = snaps.mapIndexedNotNull { i, d -> d.tryDecode()?.let { MessageFormat.SPEEDS[i] to it } }
+                                .maxByOrNull { it.second.atSec }
+                            decoding = false
+                            if (got != null) runOnUiThread {
+                                if (!alive) return@runOnUiThread
+                                val (sp, d) = got
+                                message.text = "MESSAGE: \"${d.text}\"\n(${sp.name}, sureness ${(d.confidence * 100).toInt()}%)"
+                                if (d.text + d.atSec != lastText) {
+                                    lastText = d.text + d.atSec
+                                    log.append(String.format(Locale.US, "MESSAGE at %.1f s: \"%s\" speed=%s sureness=%.2f\n",
+                                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, d.text, sp.name, d.confidence))
+                                    tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
+                                }
+                            }
+                        }
+                    }
+                }
                 if (frames % 15 == 0) l.analyze()?.let { r ->
                     val found = r.best >= Listener.FOUND_SPOT || r.coarse >= Listener.FOUND_ZONE || r.whole >= Listener.FOUND_WHOLE
+                    if (found && lock == null) {
+                        val scores = listOf(r.best / Listener.FOUND_SPOT, r.coarse / Listener.FOUND_ZONE, r.whole / Listener.FOUND_WHOLE)
+                        val kind = scores.indices.maxByOrNull { scores[it] }!!
+                        lock = kind to when (kind) { 0 -> r.bestY * CamSession.ZX + r.bestX; 1 -> r.coarseIdx; else -> 0 }
+                        log.append("LOCKED on ${listOf("small spot", "big zone", "whole picture")[kind]} ${lock!!.second}\n")
+                        runOnUiThread { message.text = "Locked on. Reading any message..." }
+                    }
                     log.append(String.format(Locale.US, "%.1f,%.1f,%d,%d,%.1f,%.1f,%d\n",
                         (SystemClock.elapsedRealtime() - startedAt) / 1000.0, r.best, r.bestX, r.bestY, r.coarse, r.whole, if (found) 1 else 0))
                     runOnUiThread {
@@ -447,6 +508,9 @@ class MainActivity : Activity() {
         }
 
         col.button("Save results (and keep going)") { val p = save(); status.text = "Saved: $p"; log.setLength(0); log.append("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n") }
+        col.button("Listen again (forget where we heard us)") {
+            lock = null; decoders.forEach { it.reset() }; message.text = ""; lastText = ""
+        }
         col.button("Change rhythm to listen for") { rateIdx = (rateIdx + 1) % rates.size; start() }
         col.button("Change exposure") { expIdx = (expIdx + 1) % exposures.size; start() }
 
@@ -455,6 +519,7 @@ class MainActivity : Activity() {
             if (log.count { it == '\n' } > 3) save()
             cam?.close(); cam = null
             tone?.release()
+            worker.shutdown()
         }
         startedAt = SystemClock.elapsedRealtime()
         start()

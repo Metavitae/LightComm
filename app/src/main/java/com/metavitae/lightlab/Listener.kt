@@ -18,6 +18,7 @@ class Listener(val flashesPerSec: Double) {
         val tSec: Double,
         val best: Double, val bestX: Int, val bestY: Int,   // best fine zone (sensor grid)
         val coarse: Double,                                 // best of the 8x6 big zones
+        val coarseIdx: Int,
         val whole: Double,                                  // whole picture
         val map: FloatArray,                                // strength of every fine zone
     )
@@ -94,16 +95,35 @@ class Listener(val flashesPerSec: Double) {
         var best = 0
         for (i in 0 until nFine) if (strength[i] > strength[best]) best = i
         var bestC = 0.0
-        for (i in 0 until cx * cy) bestC = maxOf(bestC, strength[nFine + i].toDouble())
+        var bestCi = 0
+        for (i in 0 until cx * cy) if (strength[nFine + i] > bestC) { bestC = strength[nFine + i].toDouble(); bestCi = i }
         return Result(
             (times[idx[win - 1]] - t0) / 1e9,
             strength[best].toDouble(), best % zx, best / zx,
-            bestC, strength[nZones - 1].toDouble(),
+            bestC, bestCi, strength[nZones - 1].toDouble(),
             strength.copyOfRange(0, nFine),
         )
     }
 
     companion object {
+        /** Brightness of one channel from a fine grid: kind 0 = small spot, 1 = big zone (8x6), 2 = whole picture. */
+        fun channel(fine: FloatArray, kind: Int, idx: Int): Float {
+            val zx = CamSession.ZX
+            val zy = CamSession.ZY
+            return when (kind) {
+                0 -> fine[idx]
+                1 -> {
+                    val gx = idx % 8
+                    val gy = idx / 8
+                    var sum = 0f
+                    var n = 0
+                    for (y in gy * zy / 6 until (gy + 1) * zy / 6) for (x in gx * zx / 8 until (gx + 1) * zx / 8) { sum += fine[y * zx + x]; n++ }
+                    sum / maxOf(1, n)
+                }
+                else -> fine.average().toFloat()
+            }
+        }
+
         /**
          * Strength needed to say "we hear us". From the first test (Oct 11):
          * with no signal, the best of ~3000 small spots reached up to ~230 by
