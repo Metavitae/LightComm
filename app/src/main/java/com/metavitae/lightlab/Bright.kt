@@ -23,8 +23,8 @@ import kotlin.math.sqrt
  *   staircase (each level held 3 symbols, low to high) | text, with a pilot mini-staircase
  *   after every 32 symbols | dark tail.
  * Start mark and header are on/off only, at the text's speed (30 or 15 symbols per second).
- * Header: stamp 16 | nonce 16 | mode 4 | phone tag 4 | shortest pulse (ms) 4 | length 8.
- * Text: UTF-8 bytes + check byte, scrambled with the passphrase, Hamming 7/4, interleaved.
+ * Header: stamp 16 | nonce 16 | mode 4 | phone tag 4 | shortest pulse (ms) 4 | length 8 | header check byte 8 (Hamming 7/4, interleaved).
+ * Text: UTF-8 bytes + 16-bit check (CRC-16), scrambled with the passphrase, Hamming 7/4, interleaved.
  */
 object BrightFormat {
     const val SLOT = 1.0 / 30
@@ -38,7 +38,7 @@ object BrightFormat {
     val SYNC_SLOTS = DARK + SYNC.size
     const val TAIL = 9
     val BARKER = intArrayOf(1, 1, 1, 0, 0, 1, 0)
-    const val HDR_BITS = 52
+    const val HDR_BITS = 60
     val HDR_SYMS = BARKER.size + HDR_BITS / 4 * 7
     const val TRAIN_REPEAT = 3
     const val PILOT_EVERY = 32
@@ -144,19 +144,38 @@ object BrightFormat {
         bitsOf(tag, 4, b)
         bitsOf(pminMs, 4, b)
         bitsOf(len xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff), 8, b)
-        return hamming(b)
+        bitsOf(headerCheck(b), 8, b)
+        return interleave(hamming(b))
+    }
+
+    /** Check byte over the first 52 header bits. */
+    fun headerCheck(bits: List<Int>): Int {
+        val bytes = ByteArray(7) { k -> var v = 0; for (i in 0 until 8) v = (v shl 1) or (bits.getOrElse(k * 8 + i) { 0 }); v.toByte() }
+        return MessageFormat.crc8(bytes)
+    }
+
+    /** CRC-16 (CCITT): one wrong message in ~65,000 slips through, instead of one in 256 with 8 bits. */
+    fun crc16(data: ByteArray): Int {
+        var c = 0xFFFF
+        for (b in data) {
+            c = c xor ((b.toInt() and 0xff) shl 8)
+            repeat(8) { c = if (c and 0x8000 != 0) ((c shl 1) xor 0x1021) and 0xFFFF else (c shl 1) and 0xFFFF }
+        }
+        return c
     }
 
     /** Coded (protected, interleaved) text bits, before they become symbols. */
     fun bodyBits(data: ByteArray, pass: String, nonce: Int): IntArray {
-        val ks = MessageFormat.keystream(pass, nonce, data.size + 2)
+        val ks = MessageFormat.keystream(pass, nonce, data.size + 3)
         val b = ArrayList<Int>()
         data.forEachIndexed { i, x -> bitsOf((x.toInt() xor ks[i + 1].toInt()) and 0xff, 8, b) }
-        bitsOf(MessageFormat.crc8(data) xor (ks[data.size + 1].toInt() and 0xff), 8, b)
+        val crc = crc16(data)
+        bitsOf(((crc shr 8) xor ks[data.size + 1].toInt()) and 0xff, 8, b)
+        bitsOf((crc xor ks[data.size + 2].toInt()) and 0xff, 8, b)
         return interleave(hamming(b))
     }
 
-    fun codedBodyBitCount(len: Int) = (len + 1) * 14
+    fun codedBodyBitCount(len: Int) = (len + 2) * 14
     fun dataSymbolCount(len: Int, mode: Mode) = ceil(codedBodyBitCount(len).toDouble() / mode.bits).toInt() * mode.group
 
     /** Data symbols with pilots inserted; returns (symbols, isPilot). */
@@ -396,7 +415,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
      * Fit each channel's brightness curve (9 points, kept smooth) to every picture whose
      * light is fully known up to symbol `knownUntil`.
      */
-    private fun fit(c: Chan, w: BrightFormat.Wave, knownUntil: Double, drift: DoubleArray? = null) {
+    private fun fit(c: Chan, w: BrightFormat.Wave, knownUntil: Double, drift: Drift? = null) {
         val A = Array(9) { DoubleArray(9) }; val B = DoubleArray(9)
         val s = c.s
         var i = lowerBound(s.t, c.t0)
@@ -406,7 +425,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             if (a + expSec > knownUntil) break
             if (a >= 0) {
                 val x = w.light(a, a + expSec) / expSec
-                val y = s.y[i] - (drift?.get(i) ?: 0.0)
+                val y = drift?.fix(i, s.y[i]) ?: s.y[i]
                 val p = x.coerceIn(0.0, 1.0) * 8; val k = min(7, floor(p).toInt()); val u = p - k
                 A[k][k] += (1 - u) * (1 - u); A[k][k + 1] += (1 - u) * u; A[k + 1][k] += (1 - u) * u; A[k + 1][k + 1] += u * u
                 B[k] += (1 - u) * y; B[k + 1] += u * y
@@ -431,7 +450,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
      * on-times levelOn). forced[j] >= 0 fixes symbol j. Symbols outside the run use the wave.
      */
     private fun viterbi(chans: List<Chan>, w: BrightFormat.Wave, first: Int, n: Int, levelOn: DoubleArray, forced: IntArray,
-                        drift: Array<DoubleArray>? = null, tailKnown: Boolean = true): IntArray {
+                        drift: Array<Drift>? = null, tailKnown: Boolean = true): IntArray {
         val levels = levelOn.size
         val runStart = w.start[first]; val runEnd = w.start[first + n - 1] + w.dur[first + n - 1]
         class Obs(val ch: Int, val y: Double, val base: Double, val j: Int,
@@ -454,7 +473,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                     if (a < runStart) base += w.light(a, min(b, runStart))
                     if (b > runEnd) base += w.light(runEnd, b)
                     if (j == 0 && a < cs && a >= runStart) { /* nothing: covered */ }
-                    val y = s.y[i] - (drift?.get(ci)?.get(i) ?: 0.0)
+                    val y = drift?.get(ci)?.fix(i, s.y[i]) ?: s.y[i]
                     perSym[j].add(Obs(ci, y, base, j, pu0, pu1, cu0, cu1))
                 }
                 i++
@@ -505,25 +524,66 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
     /** Per symbol, per level: how much worse than the best guess (0 = best). Set by the last viterbi call. */
     private var lastSoft: Array<DoubleArray> = emptyArray()
 
-    /** Leftover slow change per channel picture (a person moving, a lamp), from a first decode. */
-    private fun driftFrom(chans: List<Chan>, w: BrightFormat.Wave, from: Double, to: Double): Array<DoubleArray> =
+    /** Slow change per channel picture: picture = off + gain x expected. 1.5 s windows. */
+    private class Drift(val off: DoubleArray, val gain: DoubleArray) {
+        fun fix(i: Int, y: Double) = (y - off[i]) / gain[i]
+    }
+
+    /**
+     * Leftover slow change (a person walking past, a lamp, the room light), from a first
+     * decode: in every 1.5 s window, how the pictures compare with what was expected,
+     * as an offset and a gain (a shadow lowers the gain).
+     */
+    private fun driftFrom(chans: List<Chan>, w: BrightFormat.Wave, from: Double, to: Double): Array<Drift> =
         Array(chans.size) { ci ->
             val c = chans[ci]; val s = c.s
-            val res = DoubleArray(s.t.size) { Double.NaN }
+            val p = DoubleArray(s.t.size) { Double.NaN }
             for (i in s.t.indices) {
                 val a = s.t[i] - c.t0
                 if (a < from || a + expSec > to) continue
-                res[i] = s.y[i] - c.F(w.light(a, a + expSec) / expSec)
+                p[i] = c.F(w.light(a, a + expSec) / expSec)
             }
-            val out = DoubleArray(s.t.size)
-            val half = 45
+            val off = DoubleArray(s.t.size); val gain = DoubleArray(s.t.size) { 1.0 }
+            val half = ENV_HALF
+            val f0 = c.f[0]
             for (i in s.t.indices) {
-                var sum = 0.0; var n = 0
-                for (k in max(0, i - half)..min(s.t.size - 1, i + half)) if (!res[k].isNaN()) { sum += res[k]; n++ }
-                out[i] = if (n > 10) sum / n else 0.0
+                var n = 0; var sx = 0.0; var sy = 0.0; var sxx = 0.0; var sxy = 0.0
+                for (k in max(0, i - half)..min(s.t.size - 1, i + half)) if (!p[k].isNaN()) {
+                    val x = p[k] - f0; val y = s.y[k] - f0
+                    n++; sx += x; sy += y; sxx += x * x; sxy += x * y
+                }
+                if (n < 10) continue
+                val vx = sxx - sx * sx / n
+                if (vx > 4 * c.sigma * c.sigma * n) {
+                    val g = ((sxy - sx * sy / n) / vx).coerceIn(0.25, 2.5)
+                    gain[i] = g
+                    off[i] = f0 + (sy - g * sx) / n - g * f0
+                } else off[i] = (sy - sx) / n
             }
-            out
+            Drift(off, gain)
         }
+
+    /**
+     * Guess-free version (like a radio's automatic volume): in a 2.4 s window, the darkest and
+     * brightest pictures are compared with those during the sync, and scaled back to match.
+     */
+    private fun envelopeDrift(chans: List<Chan>): Array<Drift> = Array(chans.size) { ci ->
+        val c = chans[ci]; val s = c.s
+        val syncA = c.t0 + BrightFormat.DARK * BrightFormat.SLOT; val syncB = c.t0 + BrightFormat.syncWave().end
+        val ref = s.y.indices.filter { s.t[it] in syncA..syncB }.map { s.y[it] }.sorted()
+        val off = DoubleArray(s.t.size); val gain = DoubleArray(s.t.size) { 1.0 }
+        if (ref.size < 20) return@Array Drift(off, gain)
+        val lo0 = ref[(ref.size * 0.05).toInt()]; val hi0 = ref[(ref.size * 0.95).toInt()]
+        if (hi0 - lo0 < 4 * c.sigma) return@Array Drift(off, gain)
+        val half = ENV_HALF
+        for (i in s.t.indices) {
+            val win = (max(0, i - half)..min(s.t.size - 1, i + half)).map { s.y[it] }.sorted()
+            val lo = win[(win.size * 0.05).toInt()]; val hi = win[(win.size * 0.95).toInt()]
+            val g = ((hi - lo) / (hi0 - lo0)).coerceIn(0.25, 2.5)
+            gain[i] = g; off[i] = lo - g * lo0
+        }
+        Drift(off, gain)
+    }
 
     // ------------------------------------------------------------ whole message
 
@@ -538,16 +598,36 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         // Header: on/off at 30 or 15 per second; the one whose stamp is right wins.
         val hs = BrightFormat.HDR_SYMS
         var hdr: IntArray? = null; var rate = 0
-        for (tryRate in listOf(30, 15)) {
+        var headerNote = ""
+        fun headerOk(bits: IntArray): Boolean {
+            val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
+            return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52))
+        }
+        rates@ for (tryRate in listOf(30, 15)) {
             val ts = 1.0 / tryRate
             val trial = BrightFormat.syncWave()
             repeat(hs) { trial.add(ts, Double.NaN) }
             val forced = IntArray(hs) { if (it < BrightFormat.BARKER.size) BrightFormat.BARKER[it] else -1 }
-            val syms = viterbi(chans, trial, BrightFormat.SYNC_SLOTS, hs, doubleArrayOf(0.0, ts), forced, tailKnown = false)
-            val bits = BrightFormat.unhamming(syms.copyOfRange(BrightFormat.BARKER.size, hs))
-            val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
-            if (stamp == MessageFormat.tag(pass, nonce)) { hdr = bits; rate = tryRate; for (k in 0 until hs) w.add(ts, if (syms[k] == 1) ts else 0.0); break }
+            chans.forEach { fit(it, w, w.end) }
+            var drift: Array<Drift>? = null
+            for (attempt in 0..2) {
+                val syms = viterbi(chans, trial, BrightFormat.SYNC_SLOTS, hs, doubleArrayOf(0.0, ts), forced, drift, tailKnown = false)
+                debugHdr?.let { e -> if (e.size == hs && tryRate == debugRate) println("    header rate $tryRate attempt $attempt: wrong symbols ${e.indices.count { e[it] != syms[it] }} of $hs; wrong at " +
+                    e.indices.filter { e[it] != syms[it] }.joinToString(",")) }
+                val bits = BrightFormat.unhamming(BrightFormat.deinterleave(syms.copyOfRange(BrightFormat.BARKER.size, hs)))
+                if (headerOk(bits)) {
+                    hdr = bits; rate = tryRate; headerNote = if (attempt == 0) "" else "header on pass ${attempt + 1}; "
+                    for (k in 0 until hs) w.add(ts, if (syms[k] == 1) ts else 0.0)
+                    break@rates
+                }
+                // Next tries: follow slow changes (a shadow, a lamp): first guess-free, then from these guesses.
+                for (k in 0 until hs) trial.on[BrightFormat.SYNC_SLOTS + k] = if (syms[k] == 1) ts else 0.0
+                val d = if (attempt == 0) envelopeDrift(chans) else driftFrom(chans, trial, 0.0, trial.end)
+                drift = d
+                chans.forEachIndexed { ci, c -> fit(c, w, w.end, d[ci]) }
+            }
         }
+        if (hdr != null) chans.forEach { fit(it, w, BrightFormat.syncWave().end) }
         val best0 = chans.first()
         if (hdr == null) return Result(false, "header not read (or another passphrase)", t0 = t0, channels = chans.size, syncCorr = syncCorr,
             snr = best0.swing / best0.sigma)
@@ -580,27 +660,28 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val coded = BrightFormat.symbolsToBits(data, mode, nb)
             val soft = lastSoft.filterIndexed { j, _ -> !isPilot[j] }
             val llr = BrightFormat.softBits(soft, mode, nb)
-            val ks = MessageFormat.keystream(pass, nonce, len + 2)
+            val ks = MessageFormat.keystream(pass, nonce, len + 3)
             // Soft repair (capped, so one badly timed pulse can't shout down its neighbours), then plain repair.
             for (plain in listOf(BrightFormat.softDecode(DoubleArray(llr.size) { llr[it].coerceIn(-SOFT_CAP, SOFT_CAP) }),
                                  BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
                 val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
-                val crc = bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)
-                if (crc == MessageFormat.crc8(bytes)) return coded to String(bytes, Charsets.UTF_8)
+                val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
+                if (crc == BrightFormat.crc16(bytes)) return coded to String(bytes, Charsets.UTF_8)
             }
             return coded to null
         }
         var body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced)
         var (coded, text) = read(body)
-        var note = "first pass"
-        if (text == null) {
-            // Second pass: put the first guesses in, remove slow changes, refit, read again.
+        var note = headerNote + "first pass"
+        // More passes if needed: follow slow changes (shadows, lamps), guess-free first, then from the latest guesses.
+        for (pass in 2..3) {
+            if (text != null) break
             for (j in 0 until nBody) w.on[lay.bodyFirst + j] = levelOn[body[j]]
-            val drift = driftFrom(chans, w, w.start[BrightFormat.SYNC_SLOTS], w.end)
+            val drift = if (pass == 2) envelopeDrift(chans) else driftFrom(chans, w, 0.0, w.end)
             chans.forEachIndexed { ci, c -> fit(c, w, w.end, drift[ci]) }
             body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced, drift)
             val r = read(body); coded = r.first; text = r.second
-            note = "second pass (slow changes removed)"
+            note = headerNote + if (pass == 2) "pass 2 (brightness followed, guess-free)" else "pass 3 (brightness followed from guesses)"
         }
         // How many of the mode's levels stand clearly apart on the best channel (gap > 3 x noise).
         val lv = levelOn.map { best.F(it / mode.symSec) }
@@ -612,6 +693,11 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
     }
 
     companion object {
+        /** For the simulator only: the true header symbols, to print how many were misread. */
+        @JvmField var debugHdr: IntArray? = null
+        @JvmField var debugRate = 0
+        /** Half-width (pictures) of the windows used to follow brightness changes. */
+        @JvmField var ENV_HALF = 12
         /** Largest say one coded bit gets in soft repair (in units of squared noise). */
         @JvmField var SOFT_CAP = 20.0
         fun lowerBound(a: DoubleArray, v: Double): Int { var lo = 0; var hi = a.size; while (lo < hi) { val m = (lo + hi) / 2; if (a[m] < v) lo = m + 1 else hi = m }; return lo }

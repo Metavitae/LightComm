@@ -36,6 +36,12 @@ object BrightSim {
 
     fun Random.gauss(): Double { var u = 0.0; repeat(12) { u += nextDouble() }; return u - 6.0 }
 
+    /** Stress knobs (defaults = plain case). */
+    @JvmField var realExp = 0.0325      // exposure the camera really used
+    @JvmField var patchWidth = 3.0      // how wide our light's glow is, in blocks
+    @JvmField var ppm = 0.0             // sender clock faster than the receiver's, parts per million
+    @JvmField var personAt = -1.0       // seconds into the send when someone walks past (-1 = nobody)
+
     data class Outcome(val ok: Boolean, val bitErrors: Int, val bits: Int, val stage: String, val seconds: Double)
 
     fun run(text: String, mode: BrightFormat.Mode, torch: Torch, cam: Cam, room: Room, seed: Int, verbose: Boolean = false, snrScale: Double = 1.0): Outcome {
@@ -53,7 +59,7 @@ object BrightSim {
                 val start = max(t, free)
                 val d = torch.call(r)
                 calls.add(d)
-                effects.add(lead + start + 0.7 * d to on)
+                effects.add((lead + start + 0.7 * d) * (1 - ppm * 1e-6) to on)
                 free = start + d
             }
         }
@@ -73,12 +79,12 @@ object BrightSim {
         }
         // Receiver: 12 row bands x 8 column blocks; our light falls on a patch of them.
         val nb = 12; val nc = 8
-        val exp = 0.0330
+        val exp = realExp
         val total = lead + send.wave.end + 1.0
         val phase = r.nextDouble() / cam.fps
         val nFrames = ((total - phase) * cam.fps).toInt()
         val pr = 2 + r.nextInt(6); val pc = 1 + r.nextInt(5)   // patch centre
-        val gains = DoubleArray(nb * nc) { i -> val b = i / nc; val c = i % nc; exp(-((b - pr) * (b - pr) / 8.0 + (c - pc) * (c - pc) / 3.0)) }
+        val gains = DoubleArray(nb * nc) { i -> val b = i / nc; val c = i % nc; exp(-((b - pr) * (b - pr) / (8.0 * patchWidth / 3) + (c - pc) * (c - pc) / (3.0 * patchWidth / 3))) }
         val swing = 10.0
         val sigma = swing / (room.swingOverNoise * snrScale)
         val bg = DoubleArray(nb * nc) { swing * room.bgOverSwing * (0.7 + 0.6 * r.nextDouble()) }
@@ -97,7 +103,9 @@ object BrightSim {
                 for (c in 0 until nc) {
                     val i = b * nc + c
                     drift[i] += room.driftPerSec * swing / cam.fps * r.gauss()
-                    val lin = bg[i] * fl + drift[i] + swing * gains[i] * on
+                    // a person walks past: over 0.4 s blocks half our light and a fifth of the room light, for 1.5 s, then over 0.4 s back
+                    val u = if (personAt < 0) 0.0 else { val x = ts - lead - personAt; when { x < 0 || x > 2.3 -> 0.0; x < 0.4 -> x / 0.4; x < 1.9 -> 1.0; else -> (2.3 - x) / 0.4 } }
+                    val lin = bg[i] * fl * (1 - 0.2 * u) + drift[i] + swing * gains[i] * on * (1 - 0.5 * u)
                     // the camera's brightness curve (not straight), then rounding to whole steps after averaging
                     val y = 255.0 * (max(0.0, lin) / 255.0).pow(0.8) + sigma * r.gauss()
                     series[i][f] = y; whole += y
@@ -105,8 +113,10 @@ object BrightSim {
             }
             series[nb * nc][f] = whole / (nb * nc)
         }
+        if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
+            println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
         val ss = series.map { BrightDecoder.Series(times, it) }
-        val dec = BrightDecoder(pass, exp)
+        val dec = BrightDecoder(pass, 0.0325)
         val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6).take(3)
         var res: BrightDecoder.Result? = null
         for ((t0, c) in starts) { val x = dec.decode(ss, t0, c); if (res == null || x.ok) res = x; if (x.ok) break }
@@ -122,6 +132,9 @@ object BrightSim {
         val scale = args.getOrNull(2)?.toDouble() ?: 1.0
         val verbose = args.getOrNull(3) == "v"
         args.getOrNull(4)?.toDouble()?.let { BrightDecoder.SOFT_CAP = it }
+        args.getOrNull(5)?.let { kv -> kv.split(";").forEach { val (k, v) = it.split("="); when (k) {
+            "exp" -> realExp = v.toDouble(); "patch" -> patchWidth = v.toDouble(); "ppm" -> ppm = v.toDouble(); "person" -> personAt = v.toDouble(); "env" -> BrightDecoder.ENV_HALF = v.toInt() } } }
+        println("stress: real exposure ${realExp * 1000} ms (decoder assumes 32.5), patch $patchWidth blocks, clock $ppm ppm, person at $personAt s")
         println("SIMULATED (not measured). reps=$reps per cell, noise scale 1/$scale, soft cap ${BrightDecoder.SOFT_CAP}")
         println("mode | room | sender->receiver | right | bit errors before repair | seconds per send (msg 2)")
         for (room in listOf(DIM, LIT)) for ((torch, cam) in listOf(POCO_TORCH to CAM_8T, T8_TORCH to CAM_POCO)) for (mode in modes) {
