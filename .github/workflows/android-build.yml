@@ -31,3 +31,6 @@ jobs:
         with:
           name: lightlab-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Simulation checks (computer model of the light link, not a measurement)
+        run: gradle testDebugUnitTest --no-daemon

@@ -53,6 +53,12 @@ class MainActivity : Activity() {
             "calib-send" -> { intent.getStringExtra("pass")?.let { savePass(it) }; showCalibSend(true) }
             "calib-recv" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 withCamera { showCalibRecv(intent.getIntExtra("iso", 100), intent.getIntExtra("secs", 40)) } }
+            // adb: --es mode bright-send [--es modes 0,1,2,3,4] [--es msgs 0,1,2,3] [--ei repeats 10] [--ei gap 3] [--ei beacon 0] [--es text "..."] [--es pass W]
+            "bright-send" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                showBrightSend(BrightRunPlan.from(intent)) }
+            // adb: --es mode bright-recv [--es room dim|lit] [--es paces 5] [--ei iso 0 (0 = automatic)] [--es pass W]
+            "bright-recv" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                withCamera { showBrightRecv(intent.getStringExtra("room") ?: "dim", intent.getStringExtra("paces") ?: "hand-width", intent.getIntExtra("iso", 0)) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -134,6 +140,9 @@ class MainActivity : Activity() {
             button("9. Calibrate: measure brightness steps") { onMenu = false; withCamera { showCalibRecv(100, 40) } }
             button("7. Two-way: talk and listen at once") { onMenu = false; withCamera { showDuplex(DuplexFormat.CALLER, null, 0) } }
             button("6. Listen for us (no aiming needed)") { onMenu = false; withCamera { showListen(10.0) } }
+            text("Messages in brightness steps (Oct 12)", 18f, bold = true)
+            button("10. Brightness messages: SEND") { onMenu = false; showBrightSend(null) }
+            button("11. Brightness messages: RECEIVE") { onMenu = false; withCamera { showBrightRecv("dim", "hand-width", 0) } }
         }
     }
 
@@ -819,6 +828,195 @@ class MainActivity : Activity() {
             }
             val t = r.threshold()
             c.drawLine(0f, h - t / 255f * h, w, h - t / 255f * h, mid)
+        }
+    }
+
+    // ------------------------------------------------------- brightness messages
+
+    /** A camera screen that never needs scrolling: camera view on top, text in the middle, buttons fixed at the bottom. */
+    private class CameraPage(val root: LinearLayout, val camBox: android.widget.FrameLayout, val info: LinearLayout, val bar: LinearLayout)
+
+    private fun cameraPage(title: String): CameraPage {
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(dp(8), dp(8), dp(8), dp(8)) }
+        root.addView(TextView(this).apply { text = title; textSize = 20f; setTextColor(Color.WHITE); setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        val camBox = android.widget.FrameLayout(this)
+        root.addView(camBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.1f))
+        val info = column()
+        val sv = ScrollView(this).apply { addView(info) }
+        root.addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        setContentView(root)
+        return CameraPage(root, camBox, info, bar)
+    }
+
+    private fun LinearLayout.barButton(label: String, onClick: () -> Unit): android.widget.Button =
+        android.widget.Button(context).apply { text = label; textSize = 13f; isAllCaps = false; setOnClickListener { onClick() } }
+            .also { addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
+
+    private fun showBrightSend(plan: BrightRunPlan?) {
+        onMenu = false
+        val sender = BrightSender(this)
+        stopCurrent = { sender.running = false }
+        var status: TextView? = null
+        var log: TextView? = null
+        val modeNames = BrightFormat.MODES.map { "${it.name}  (about ${it.rawBitsPerSec.toInt()} bits/s raw)" }
+        lateinit var modeChoice: () -> Int
+        lateinit var msgChoice: () -> Int
+        var custom: EditText? = null
+        fun run(p: BrightRunPlan) {
+            Thread {
+                val file = LiveFile(this, "bright-send")
+                file.append(Results.header("Brightness messages, sender") + "Plan: ${p.describe()}\nPassphrase rhythm: ${MessageFormat.beaconHz(savedPass())} /s (passphrase itself not saved)\n\n" + BrightSender.HEAD)
+                for (i in 3 downTo 1) { runOnUiThread { status?.text = "Starting in $i..." }; Thread.sleep(1000) }
+                var k = 0
+                val total = p.sends.size
+                for ((mode, text) in p.sends) {
+                    if (stopCurrent == null) break
+                    k++
+                    val r = sender.send(text, mode, savedPass(), p.beaconSec) { st -> runOnUiThread { status?.text = "Send $k of $total: $st" } }
+                    file.append(sender.line(k, r))
+                    runOnUiThread { log?.text = "Last: send $k of $total, ${r.mode.name}, shortest pulse ${r.pminMs} ms, ${"%.1f".format(r.seconds)} s, ${r.failure ?: "ok"}\nSaved in ${file.path}" }
+                    if (r.failure == "stopped") break
+                    Thread.sleep((p.gapSec * 1000).toLong())
+                }
+                runOnUiThread { status?.text = "Done. Saved: ${file.path}" }
+            }.start()
+        }
+        scrollPage {
+            text("Brightness messages: send", 24f, bold = true)
+            text("Put this phone on the table, flashlight up, as for calibration. The other phone runs RECEIVE. Never aim the light at anyone's eyes.", 14f)
+            text("Passphrase: ${savedPass()} (same on both phones)", 14f, color = Color.LTGRAY)
+            modeChoice = choice("Mode", modeNames, 2)
+            msgChoice = choice("Message", BrightFormat.TEST_MESSAGES + "My own text (below)")
+            custom = EditText(context).apply { hint = "My own text (letters, accents ok, up to 80 bytes)"; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY) }
+            addView(custom)
+            button("Send once (3 second countdown)") {
+                val m = BrightFormat.MODES[modeChoice()]
+                val t = if (msgChoice() < BrightFormat.TEST_MESSAGES.size) BrightFormat.TEST_MESSAGES[msgChoice()] else custom?.text.toString().ifBlank { "HOLA" }
+                run(BrightRunPlan(listOf(m to t), 3.0, 0.0))
+            }
+            button("Run the whole test list for this mode (4 messages x 10)") {
+                run(BrightRunPlan.build(listOf(modeChoice()), listOf(0, 1, 2, 3), 10, 3.0, 0.0))
+            }
+            button("Stop") { sender.running = false; stopCurrent = null }
+            status = text("", 16f, color = Color.rgb(255, 200, 0))
+            log = text("", 13f, color = Color.LTGRAY)
+        }
+        if (plan != null) run(plan)
+    }
+
+    private fun showBrightRecv(room0: String, paces0: String, isoFixed: Int) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val pg = cameraPage("Brightness messages: receive")
+        val tv = TextureView(this)
+        val overlay = BlockView(this)
+        pg.camBox.addView(tv, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        pg.camBox.addView(overlay, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val where = pg.info.text("Point the camera so the other phone's light (or its glow on the ceiling) is in the picture. Yellow squares = where light is changing.", 13f, color = Color.LTGRAY)
+        val status = pg.info.text("Starting camera...", 18f, bold = true, color = Color.rgb(255, 200, 0))
+        val message = pg.info.text("", 20f, bold = true, color = Color.rgb(120, 200, 255))
+        val conditions = pg.info.text("", 13f, color = Color.LTGRAY)
+        val tallyView = pg.info.text("", 13f)
+        val exp = 0.0325
+        val rx = BrightListener(this, savedPass(), exp)
+        rx.room = room0; rx.paces = paces0
+        val file = LiveFile(this, "bright-recv")
+        val c = CamSession(this, cams[0].first, tv) { }
+        c.manual = true; c.fps = 30; c.expNs = (exp * 1e9).toLong(); c.iso = if (isoFixed > 0) isoFixed else 400
+        rx.iso = c.iso
+        c.onError = { e -> runOnUiThread { status.text = "Camera problem: $e" } }
+        c.zoneSink = { ts, fine -> rx.add(ts, fine) }
+        var alive = true
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
+        fun describe() {
+            conditions.text = "Room: ${rx.room.uppercase()}   Distance: ${rx.paces}   Light sensor: ${if (rx.lux.isNaN()) "-" else "%.0f lux".format(rx.lux)}\n" +
+                "Camera: ${cams[0].second}, exposure ${"%.1f".format(exp * 1000)} ms locked, ISO ${rx.iso}, picture every ${"%.1f".format(rx.frameGapMs())} ms, background ${"%.0f".format(rx.background())}\nSaved live in ${file.path}"
+        }
+        file.append(Results.header("Brightness messages, receiver") + "Passphrase rhythm: ${MessageFormat.beaconHz(savedPass())} /s (passphrase itself not saved)\n" +
+            "Camera: ${cams[0].second}, exposure ${exp * 1000} ms fixed (locked), 30 pictures per second asked, ISO ${if (isoFixed > 0) "$isoFixed fixed" else "automatic once, then fixed"}\n" +
+            "Blocks: ${BrightListener.NB} row bands x ${BrightListener.NC} column blocks + whole picture\n\n" + BrightListener.HEAD)
+        pg.bar.barButton("Dim / Lit") { rx.room = if (rx.room == "dim") "lit" else "dim"; describe() }
+        pg.bar.barButton("Paces -") { rx.paces = (rx.paces.toIntOrNull()?.minus(1) ?: 0).coerceAtLeast(0).let { if (it == 0) "hand-width" else "$it" }; describe() }
+        pg.bar.barButton("Paces +") { rx.paces = ((rx.paces.toIntOrNull() ?: 0) + 1).toString(); describe() }
+        pg.bar.barButton("Stop") { leave(); showMenu() }
+        stopCurrent = {
+            alive = false
+            c.close(); rx.stopLux(); worker.shutdown(); tone?.release()
+            file.append("\nSTOPPED. Tally:\n" + rx.tallyText() + "\n")
+        }
+        rx.startLux()
+        // Automatic sensitivity once, after 2 s: aim for a background around 40 of 255.
+        if (isoFixed <= 0) tv.postDelayed({
+            if (!alive) return@postDelayed
+            val bg = rx.background()
+            if (bg > 0.5) { c.iso = (c.iso * 40.0 / bg).toInt().coerceIn(100, 1600); rx.iso = c.iso; c.apply()
+                file.append("# automatic ISO: background was ${"%.1f".format(bg)} at ISO 400, now ISO ${c.iso}\n") }
+        }, 2000)
+        val ticker = object : Runnable {
+            override fun run() {
+                if (!alive) return
+                describe()
+                overlay.show(rx.liveliness(), c.sensorOrientation)
+                tv.postDelayed(this, 500)
+            }
+        }
+        val scanner = object : Runnable {
+            override fun run() {
+                if (!alive) return
+                worker.execute {
+                    val lines = try { rx.scan() } catch (e: Exception) { listOf("# scan problem: ${e.message}\n") }
+                    for (l in lines) file.append(l)
+                    if (lines.isNotEmpty()) runOnUiThread {
+                        if (!alive) return@runOnUiThread
+                        message.text = rx.lastLine
+                        tallyView.text = rx.tallyText()
+                        tone?.startTone(if (rx.lastLine.startsWith("\"")) android.media.ToneGenerator.TONE_PROP_ACK else android.media.ToneGenerator.TONE_PROP_NACK, 300)
+                    }
+                }
+                tv.postDelayed(this, 2000)
+            }
+        }
+        if (tv.isAvailable) c.open {} else tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { c.open {} }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        status.text = "Listening for brightness messages..."
+        tv.post(ticker)
+        tv.postDelayed(scanner, 3000)
+    }
+
+    /** Draws the 12 x 8 blocks over the camera view; brighter yellow = light changing there. */
+    class BlockView(ctx: android.content.Context) : View(ctx) {
+        private var live: FloatArray? = null
+        private var orient = 90
+        private val cell = Paint()
+        private val grid = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 1f; color = Color.argb(60, 255, 255, 255) }
+        fun show(v: FloatArray, orientation: Int) { live = v; orient = orientation; invalidate() }
+        private fun toScreen(x: Float, y: Float): Pair<Float, Float> = when (orient) {
+            90 -> (1 - y) to x
+            270 -> y to (1 - x)
+            180 -> (1 - x) to (1 - y)
+            else -> x to y
+        }
+        override fun onDraw(c: Canvas) {
+            val v = live ?: return
+            val mx = (v.maxOrNull() ?: 0f).coerceAtLeast(1e-3f)
+            val nb = BrightListener.NB; val nc = BrightListener.NC
+            for (b in 0 until nb) for (k in 0 until nc) {
+                val (x0, y0) = toScreen(k.toFloat() / nc, b.toFloat() / nb)
+                val (x1, y1) = toScreen((k + 1f) / nc, (b + 1f) / nb)
+                val l = minOf(x0, x1) * width; val r = maxOf(x0, x1) * width
+                val t = minOf(y0, y1) * height; val btm = maxOf(y0, y1) * height
+                val a = (v[b * nc + k] / mx * 150).toInt()
+                if (a > 10) { cell.color = Color.argb(a, 255, 220, 0); c.drawRect(l, t, r, btm, cell) }
+                c.drawRect(l, t, r, btm, grid)
+            }
         }
     }
 }

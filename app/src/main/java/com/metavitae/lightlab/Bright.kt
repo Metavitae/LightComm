@@ -1,0 +1,636 @@
+package com.metavitae.lightlab
+
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * Messages in brightness steps (no Android code here, so it can be simulated on a computer).
+ *
+ * The flashlight is on/off only, and every switch takes the phone several milliseconds
+ * (Oct 11: POCO about 6 ms, 8T about 11 ms). A brightness step is made by how long the
+ * light stays on at the start of each symbol; no pulse or gap is ever shorter than the
+ * sender's own measured switch time ("shortest pulse", sent in the header).
+ * The receiver takes 30 pictures per second, each exposed about 1/30 s, and works out
+ * what each picture should have seen for every possible symbol (a light model).
+ *
+ * One send, in order:
+ *   dark 0.5 s | sync: a fixed on/off pattern of 62 slots of 1/30 s (2 s), during which the
+ *   sender also measures its own switch time | start mark (Barker 7) | header | mode
+ *   staircase (each level held 3 symbols, low to high) | text, with a pilot mini-staircase
+ *   after every 32 symbols | dark tail.
+ * Start mark and header are on/off only, at the text's speed (30 or 15 symbols per second).
+ * Header: stamp 16 | nonce 16 | mode 4 | phone tag 4 | shortest pulse (ms) 4 | length 8.
+ * Text: UTF-8 bytes + check byte, scrambled with the passphrase, Hamming 7/4, interleaved.
+ */
+object BrightFormat {
+    const val SLOT = 1.0 / 30
+    const val DARK = 15
+    /** 31-step test pattern (maximum-length sequence), played twice: sharp to find in time. */
+    val SYNC: IntArray = run {
+        var reg = 0x1F
+        val one = IntArray(31) { val b = ((reg shr 4) xor (reg shr 2)) and 1; reg = ((reg shl 1) or b) and 0x1F; b }
+        one + one
+    }
+    val SYNC_SLOTS = DARK + SYNC.size
+    const val TAIL = 9
+    val BARKER = intArrayOf(1, 1, 1, 0, 0, 1, 0)
+    const val HDR_BITS = 52
+    val HDR_SYMS = BARKER.size + HDR_BITS / 4 * 7
+    const val TRAIN_REPEAT = 3
+    const val PILOT_EVERY = 32
+    const val MAX_BYTES = 80
+
+    data class Mode(val id: Int, val levels: Int, val perSec: Int, val group: Int, val bits: Int) {
+        val symSec get() = 1.0 / perSec
+        val name get() = "$levels levels, $perSec per second"
+        val rawBitsPerSec get() = perSec.toDouble() * bits / group
+        val pilot: IntArray get() = if (levels >= 4) intArrayOf(0, (levels - 1) / 3, 2 * (levels - 1) / 3, levels - 1)
+                                    else intArrayOf(0, levels - 1, 0, levels - 1)
+        /** Seconds the light is on at the start of a symbol of this level. */
+        fun onSec(level: Int, pminSec: Double): Double {
+            val ts = symSec
+            return when (level) {
+                0 -> 0.0
+                levels - 1 -> ts
+                else -> (level * ts / (levels - 1)).coerceIn(pminSec, ts - pminSec)
+            }
+        }
+    }
+
+    val MODES = listOf(
+        Mode(0, 2, 30, 1, 1),
+        Mode(1, 3, 30, 2, 3),
+        Mode(2, 4, 15, 1, 2),
+        Mode(3, 5, 15, 4, 9),
+        Mode(4, 8, 15, 1, 3),
+    )
+
+    val TEST_MESSAGES = listOf(
+        "HOLA AMIGO",
+        "MEET AT THE TRUCK 8PM",
+        "MEET ME AT THE NORTH GATE AT 9PM. BRING WATER AND TWO LIGHTS",
+        "NOS VEMOS EN LA CAMIONETA A LAS 8PM. TRAE AGUA Y LA LÁMPARA.",
+    )
+
+    /** Short tag for a phone model (sent in the header so the receiver knows who sent). */
+    fun phoneTag(model: String): Int = (model.trim().uppercase().fold(7) { h, c -> h * 31 + c.code } and 0x7fffffff) % 16
+    val KNOWN_PHONES = mapOf("2312FPCA6G" to "POCO M6 Pro", "KB2007" to "OnePlus 8T")
+    fun phoneName(tag: Int): String = KNOWN_PHONES.entries.firstOrNull { phoneTag(it.key) == tag }?.value ?: "phone tag $tag"
+
+    /** Shortest pulse to use, from the sender's own switch times (seconds): a bit above most of them. */
+    fun pminMs(callSec: List<Double>): Int {
+        if (callSec.isEmpty()) return 12
+        val s = callSec.sorted()
+        return (ceil(s[(s.size * 0.9).toInt().coerceAtMost(s.size - 1)] * 1000) + 1).toInt().coerceIn(4, 15)
+    }
+
+    // ------------------------------------------------------------ levels <-> bits
+
+    /** Reflected Gray order of all level-tuples: neighbours in this list differ in one symbol by one step. */
+    private fun grayTuples(l: Int, g: Int): List<IntArray> {
+        if (g == 1) return (0 until l).map { intArrayOf(it) }
+        val prev = grayTuples(l, g - 1)
+        val out = ArrayList<IntArray>()
+        for (d in 0 until l) for (p in if (d % 2 == 0) prev else prev.asReversed()) out.add(intArrayOf(d) + p)
+        return out
+    }
+
+    class Codebook(val mode: Mode) {
+        private val tuples = grayTuples(mode.levels, mode.group).take(1 shl mode.bits)
+        private val keyToLabel = HashMap<Int, Int>()
+        private fun key(t: IntArray) = t.fold(0) { k, d -> k * mode.levels + d }
+        private val nearest = IntArray(Math.pow(mode.levels.toDouble(), mode.group.toDouble()).toInt())
+        init {
+            tuples.forEachIndexed { i, t -> keyToLabel[key(t)] = i xor (i shr 1) }
+            // Any tuple not in use reads as the closest one in use.
+            for (k in nearest.indices) {
+                val digits = IntArray(mode.group).also { var x = k; for (j in mode.group - 1 downTo 0) { it[j] = x % mode.levels; x /= mode.levels } }
+                var best = 0; var bestD = Int.MAX_VALUE
+                tuples.forEachIndexed { i, t -> val d = t.indices.sumOf { abs(t[it] - digits[it]) }; if (d < bestD) { bestD = d; best = i } }
+                nearest[k] = best xor (best shr 1)
+            }
+        }
+        /** label (Gray-coded bits) -> tuple */
+        fun encode(label: Int): IntArray { var i = label; var s = label shr 1; while (s != 0) { i = i xor s; s = s shr 1 }; return tuples[i] }
+        fun decode(t: IntArray): Int = keyToLabel[key(t)] ?: nearest[key(t)]
+    }
+
+    // ------------------------------------------------------------ bits
+
+    fun bitsOf(v: Int, n: Int, out: MutableList<Int>) { for (i in n - 1 downTo 0) out.add((v shr i) and 1) }
+    fun hamming(bits: List<Int>): IntArray {
+        val out = ArrayList<Int>()
+        for (i in bits.indices step 4) out.addAll(MessageFormat.hammingEncode(bits[i], bits[i + 1], bits[i + 2], bits[i + 3]).toList())
+        return out.toIntArray()
+    }
+    fun unhamming(coded: IntArray): IntArray {
+        val out = ArrayList<Int>()
+        for (i in 0 until coded.size / 7) out.addAll(MessageFormat.hammingDecode(coded.copyOfRange(i * 7, i * 7 + 7)).toList())
+        return out.toIntArray()
+    }
+    /** Block interleaver: codewords as rows, sent column by column. */
+    fun interleave(coded: IntArray): IntArray { val n = coded.size / 7; return IntArray(coded.size) { k -> coded[(k % n) * 7 + k / n] } }
+    fun deinterleave(sent: IntArray): IntArray { val n = sent.size / 7; val out = IntArray(sent.size); for (k in sent.indices) out[(k % n) * 7 + k / n] = sent[k]; return out }
+
+    fun headerBits(pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int, len: Int): IntArray {
+        val b = ArrayList<Int>()
+        bitsOf(MessageFormat.tag(pass, nonce), 16, b)
+        bitsOf(nonce, 16, b)
+        bitsOf(mode.id, 4, b)
+        bitsOf(tag, 4, b)
+        bitsOf(pminMs, 4, b)
+        bitsOf(len xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff), 8, b)
+        return hamming(b)
+    }
+
+    /** Coded (protected, interleaved) text bits, before they become symbols. */
+    fun bodyBits(data: ByteArray, pass: String, nonce: Int): IntArray {
+        val ks = MessageFormat.keystream(pass, nonce, data.size + 2)
+        val b = ArrayList<Int>()
+        data.forEachIndexed { i, x -> bitsOf((x.toInt() xor ks[i + 1].toInt()) and 0xff, 8, b) }
+        bitsOf(MessageFormat.crc8(data) xor (ks[data.size + 1].toInt() and 0xff), 8, b)
+        return interleave(hamming(b))
+    }
+
+    fun codedBodyBitCount(len: Int) = (len + 1) * 14
+    fun dataSymbolCount(len: Int, mode: Mode) = ceil(codedBodyBitCount(len).toDouble() / mode.bits).toInt() * mode.group
+
+    /** Data symbols with pilots inserted; returns (symbols, isPilot). */
+    fun withPilots(data: IntArray, mode: Mode): Pair<IntArray, BooleanArray> {
+        val s = ArrayList<Int>(); val p = ArrayList<Boolean>()
+        var i = 0
+        while (i < data.size) {
+            val end = min(data.size, i + PILOT_EVERY)
+            for (k in i until end) { s.add(data[k]); p.add(false) }
+            for (v in mode.pilot) { s.add(v); p.add(true) }
+            i = end
+        }
+        return s.toIntArray() to p.toBooleanArray()
+    }
+
+    fun bitsToSymbols(bits: IntArray, mode: Mode): IntArray {
+        val cb = Codebook(mode)
+        val out = ArrayList<Int>()
+        var i = 0
+        while (i < bits.size) {
+            var label = 0
+            for (k in 0 until mode.bits) label = (label shl 1) or (if (i + k < bits.size) bits[i + k] else 0)
+            out.addAll(cb.encode(label).toList())
+            i += mode.bits
+        }
+        return out.toIntArray()
+    }
+    fun symbolsToBits(syms: IntArray, mode: Mode, nBits: Int): IntArray {
+        val cb = Codebook(mode)
+        val out = ArrayList<Int>()
+        for (i in 0 until syms.size / mode.group) bitsOf(cb.decode(syms.copyOfRange(i * mode.group, (i + 1) * mode.group)), mode.bits, out)
+        return out.take(nBits).toIntArray()
+    }
+
+    /**
+     * Soft reading: per data symbol, how unlikely each level is (0 = best). Gives, per coded bit,
+     * "cost of 1 minus cost of 0" (positive = probably 0).
+     */
+    fun softBits(soft: List<DoubleArray>, mode: Mode, nBits: Int): DoubleArray {
+        val cb = Codebook(mode)
+        val out = ArrayList<Double>()
+        val labels = 1 shl mode.bits
+        val tuples = Array(labels) { cb.encode(it) }
+        for (g in 0 until soft.size / mode.group) {
+            val cost = DoubleArray(labels) { l -> var c = 0.0; for (d in 0 until mode.group) c += soft[g * mode.group + d][tuples[l][d]]; c }
+            for (k in mode.bits - 1 downTo 0) {
+                var c0 = Double.MAX_VALUE; var c1 = Double.MAX_VALUE
+                for (l in 0 until labels) if ((l shr k) and 1 == 0) c0 = min(c0, cost[l]) else c1 = min(c1, cost[l])
+                out.add(c1 - c0)
+            }
+        }
+        return out.take(nBits).toDoubleArray()
+    }
+
+    /** Best Hamming codeword for 7 soft bits (tries all 16), returns its 4 data bits. */
+    fun softHamming(llr: DoubleArray, at: Int): IntArray {
+        var best = 0; var bestC = Double.MAX_VALUE
+        for (v in 0 until 16) {
+            val cw = MessageFormat.hammingEncode((v shr 3) and 1, (v shr 2) and 1, (v shr 1) and 1, v and 1)
+            var c = 0.0
+            for (k in 0 until 7) { val l = llr[at + k]; c += if (cw[k] == 0) max(0.0, -l) else max(0.0, l) }
+            if (c < bestC) { bestC = c; best = v }
+        }
+        return intArrayOf((best shr 3) and 1, (best shr 2) and 1, (best shr 1) and 1, best and 1)
+    }
+
+    fun softDecode(llrSent: DoubleArray): IntArray {
+        val n = llrSent.size / 7
+        val llr = DoubleArray(llrSent.size); for (k in llrSent.indices) llr[(k % n) * 7 + k / n] = llrSent[k]
+        val out = ArrayList<Int>()
+        for (i in 0 until n) out.addAll(softHamming(llr, i * 7).toList())
+        return out.toIntArray()
+    }
+
+    fun trainSymbols(mode: Mode) = IntArray(mode.levels * TRAIN_REPEAT) { it / TRAIN_REPEAT }
+
+    // ------------------------------------------------------------ the light over time
+
+    /**
+     * The flashlight over time as back-to-back symbols: symbol i starts at start[i] seconds,
+     * lasts dur[i], and the light is on for its first on[i] seconds (NaN = not known yet).
+     */
+    class Wave {
+        var start = DoubleArray(256); var dur = DoubleArray(256); var on = DoubleArray(256)
+        var n = 0
+            private set
+        val end get() = if (n == 0) 0.0 else start[n - 1] + dur[n - 1]
+        fun add(d: Double, onSec: Double): Int {
+            if (n == start.size) { start = start.copyOf(n * 2); dur = dur.copyOf(n * 2); on = on.copyOf(n * 2) }
+            start[n] = end; dur[n] = d; on[n] = onSec
+            return n++
+        }
+        /** Index of the symbol playing at time t (clamped). */
+        fun at(t: Double): Int { var lo = 0; var hi = n - 1; while (lo < hi) { val m = (lo + hi + 1) / 2; if (start[m] <= t) lo = m else hi = m - 1 }; return lo }
+        /** Seconds of light in [a, b]; unknown symbols count as dark. */
+        fun light(a: Double, b: Double): Double {
+            if (n == 0 || b <= 0) return 0.0
+            var i = at(a); var sum = 0.0
+            while (i < n && start[i] < b) {
+                val o = on[i]
+                if (!o.isNaN() && o > 0) sum += max(0.0, min(b, start[i] + o) - max(a, start[i]))
+                i++
+            }
+            return sum
+        }
+    }
+
+    /** Where the parts of a send are (symbol indexes in the Wave). */
+    class Layout(val mode: Mode, val len: Int) {
+        val syncFirst = 0
+        val hdrFirst = DARK + SYNC.size
+        val trainFirst = hdrFirst + HDR_SYMS
+        val bodyFirst = trainFirst + mode.levels * TRAIN_REPEAT
+        val nData = dataSymbolCount(len, mode)
+        val bodySyms = nData + ceil(nData.toDouble() / PILOT_EVERY).toInt() * 4
+        val tailFirst = bodyFirst + bodySyms
+    }
+
+    /** Dark + sync: the same for every send. */
+    fun syncWave(): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
+
+    class Send(val wave: Wave, val layout: Layout, val bodySyms: IntArray, val bodyCoded: IntArray, val pminMs: Int)
+
+    fun utf8(text: String): ByteArray {
+        val b = text.toByteArray(Charsets.UTF_8)
+        if (b.size <= MAX_BYTES) return b
+        var n = MAX_BYTES
+        while (n > 0 && (b[n].toInt() and 0xC0) == 0x80) n--   // don't cut a letter in half
+        return b.copyOf(n)
+    }
+
+    /** The whole send. pminMs = the sender's shortest pulse, measured while the sync played. */
+    fun build(text: String, pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int): Send {
+        val data = utf8(text)
+        val lay = Layout(mode, data.size)
+        val w = syncWave()
+        val ts = mode.symSec
+        val pmin = pminMs / 1000.0
+        for (b in BARKER + headerBits(pass, nonce, mode, tag, pminMs, data.size)) w.add(ts, if (b == 1) ts else 0.0)
+        for (l in trainSymbols(mode)) w.add(ts, mode.onSec(l, pmin))
+        val coded = bodyBits(data, pass, nonce)
+        val (body, _) = withPilots(bitsToSymbols(coded, mode), mode)
+        check(body.size == lay.bodySyms)
+        for (l in body) w.add(ts, mode.onSec(l, pmin))
+        repeat(TAIL) { w.add(SLOT, 0.0) }
+        return Send(w, lay, body, coded, pminMs)
+    }
+
+    /** Flashlight switch times (seconds from the start, on/off) for symbols from..until, skipping switches that change nothing. */
+    fun switches(w: Wave, from: Int = 0, until: Int = w.n, startState: Boolean = false): List<Pair<Double, Boolean>> {
+        val out = ArrayList<Pair<Double, Boolean>>()
+        var state = startState
+        fun set(t: Double, on: Boolean) { if (on != state) { out.add(t to on); state = on } }
+        for (i in from until until) {
+            val o = w.on[i]
+            if (o <= 0) set(w.start[i], false)
+            else { set(w.start[i], true); if (o < w.dur[i]) set(w.start[i] + o, false) }
+        }
+        if (until == w.n) set(w.end, false)
+        return out
+    }
+}
+
+/**
+ * Reads brightness messages from recorded pictures. Channels are small areas of the
+ * picture (bands of rows x column blocks); every channel has its own timing, because the
+ * camera reads the rows one after another (rolling shutter).
+ */
+class BrightDecoder(private val pass: String, private val expSec: Double) {
+
+    /** One picture series per channel: times (s, receiver clock, start of exposure) and brightness. */
+    class Series(val t: DoubleArray, val y: DoubleArray)
+
+    data class Result(
+        val ok: Boolean, val stage: String, val text: String = "", val mode: BrightFormat.Mode? = null,
+        val phoneTag: Int = -1, val nonce: Int = -1, val len: Int = -1, val pminMs: Int = -1, val t0: Double = 0.0,
+        val coded: IntArray? = null, val bodySyms: IntArray? = null, val channels: Int = 0,
+        val syncCorr: Double = 0.0, val note: String = "", val levelsApart: Int = 0, val snr: Double = 0.0, val endT: Double = 0.0,
+        val symbolsChecked: Int = 0, val pilotErrors: Int = 0,
+    )
+
+    /** Per-channel timing and brightness curve. */
+    private class Chan(val s: Series, val t0: Double, val corr: Double) {
+        var f = DoubleArray(9)     // brightness at on-share 0, 1/8 .. 1
+        var sigma = 1.0
+        var w = 1.0
+        /** Brightness for an on-share 0..1 (straight lines between the 9 points). */
+        fun F(x: Double): Double { val p = (x.coerceIn(0.0, 1.0) * 8); val i = min(7, floor(p).toInt()); return f[i] + (f[i + 1] - f[i]) * (p - i) }
+        val swing get() = f[8] - f[0]
+    }
+
+    // ------------------------------------------------------------ finding the send
+
+    private fun corr(s: Series, t0: Double, w: BrightFormat.Wave, until: Double): Double {
+        var i = lowerBound(s.t, t0)
+        var n = 0; var sx = 0.0; var sy = 0.0; var sxx = 0.0; var syy = 0.0; var sxy = 0.0
+        while (i < s.t.size) {
+            val a = s.t[i] - t0
+            if (a + expSec > until) break
+            if (a >= 0) {
+                val x = w.light(a, a + expSec) / expSec
+                val y = s.y[i]
+                n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y
+            }
+            i++
+        }
+        if (n < 40) return 0.0
+        val cov = sxy - sx * sy / n; val vx = sxx - sx * sx / n; val vy = syy - sy * sy / n
+        return if (vx <= 0 || vy <= 0) 0.0 else cov / sqrt(vx * vy)
+    }
+
+    private val sync = BrightFormat.syncWave()
+
+    /** Find sends (their sync pattern) in a channel between times from..to. Returns (t0, correlation), best first. */
+    fun findStarts(s: Series, from: Double, to: Double, minCorr: Double = 0.8): List<Pair<Double, Double>> {
+        val step = 1.0 / 120
+        val c = ArrayList<Pair<Double, Double>>()
+        var t0 = from
+        while (t0 <= to) { c.add(t0 to corr(s, t0, sync, sync.end)); t0 += step }
+        val peaks = ArrayList<Pair<Double, Double>>()
+        for (i in c.indices) {
+            if (c[i].second < minCorr) continue
+            val lo = max(0, i - 60); val hi = min(c.size - 1, i + 60)
+            if ((lo..hi).all { c[it].second <= c[i].second }) peaks.add(c[i])
+        }
+        return peaks.sortedByDescending { it.second }
+    }
+
+    private fun timing(s: Series, t0Guess: Double): Chan? {
+        var best = t0Guess; var bestC = -1.0
+        var t = t0Guess - 0.025
+        while (t <= t0Guess + 0.025) { val c = corr(s, t, sync, sync.end); if (c > bestC) { bestC = c; best = t }; t += 0.0005 }
+        return if (bestC < 0.5) null else Chan(s, best, bestC)
+    }
+
+    /**
+     * Fit each channel's brightness curve (9 points, kept smooth) to every picture whose
+     * light is fully known up to symbol `knownUntil`.
+     */
+    private fun fit(c: Chan, w: BrightFormat.Wave, knownUntil: Double, drift: DoubleArray? = null) {
+        val A = Array(9) { DoubleArray(9) }; val B = DoubleArray(9)
+        val s = c.s
+        var i = lowerBound(s.t, c.t0)
+        val xs = ArrayList<Double>(); val ys = ArrayList<Double>()
+        while (i < s.t.size) {
+            val a = s.t[i] - c.t0
+            if (a + expSec > knownUntil) break
+            if (a >= 0) {
+                val x = w.light(a, a + expSec) / expSec
+                val y = s.y[i] - (drift?.get(i) ?: 0.0)
+                val p = x.coerceIn(0.0, 1.0) * 8; val k = min(7, floor(p).toInt()); val u = p - k
+                A[k][k] += (1 - u) * (1 - u); A[k][k + 1] += (1 - u) * u; A[k + 1][k] += (1 - u) * u; A[k + 1][k + 1] += u * u
+                B[k] += (1 - u) * y; B[k + 1] += u * y
+                xs.add(x); ys.add(y)
+            }
+            i++
+        }
+        // smoothness: penalise bends between neighbouring points (keeps unseen points sensible)
+        val lam = 0.05 * max(1.0, xs.size / 50.0)
+        for (k in 1 until 8) { val d = doubleArrayOf(1.0, -2.0, 1.0); for (p in 0..2) for (q in 0..2) A[k - 1 + p][k - 1 + q] += lam * d[p] * d[q] }
+        c.f = solve(A, B) ?: return
+        var ss = 0.0
+        for (j in xs.indices) { val e = ys[j] - c.F(xs[j]); ss += e * e }
+        c.sigma = sqrt(ss / max(1, xs.size - 9)) + 0.02   // floor: brightness comes in whole steps
+        c.w = 1.0 / (c.sigma * c.sigma)
+    }
+
+    // ------------------------------------------------------------ Viterbi over symbols
+
+    /**
+     * Decode symbols first..first+n-1 of the wave (all of duration ts, `levels` possible
+     * on-times levelOn). forced[j] >= 0 fixes symbol j. Symbols outside the run use the wave.
+     */
+    private fun viterbi(chans: List<Chan>, w: BrightFormat.Wave, first: Int, n: Int, levelOn: DoubleArray, forced: IntArray,
+                        drift: Array<DoubleArray>? = null, tailKnown: Boolean = true): IntArray {
+        val levels = levelOn.size
+        val runStart = w.start[first]; val runEnd = w.start[first + n - 1] + w.dur[first + n - 1]
+        class Obs(val ch: Int, val y: Double, val base: Double, val j: Int,
+                  val pu0: Double, val pu1: Double, val cu0: Double, val cu1: Double)
+        val perSym = Array(n) { ArrayList<Obs>() }
+        chans.forEachIndexed { ci, c ->
+            val s = c.s
+            var i = lowerBound(s.t, c.t0 + runStart - expSec)
+            while (i < s.t.size) {
+                val a = s.t[i] - c.t0; val b = a + expSec
+                if (a >= runEnd) break
+                if (b > runStart && (tailKnown || b <= runEnd)) {
+                    val j = (w.at(b - 1e-9) - first).coerceIn(0, n - 1)
+                    val cs = w.start[first + j]
+                    val cu0 = max(a, cs) - cs; val cu1 = min(b, cs + w.dur[first + j]) - cs
+                    var pu0 = 0.0; var pu1 = 0.0
+                    if (j > 0 && a < cs) { val ps = w.start[first + j - 1]; pu0 = max(a, ps) - ps; pu1 = cs - ps }
+                    // light from symbols outside the run (known)
+                    var base = 0.0
+                    if (a < runStart) base += w.light(a, min(b, runStart))
+                    if (b > runEnd) base += w.light(runEnd, b)
+                    if (j == 0 && a < cs && a >= runStart) { /* nothing: covered */ }
+                    val y = s.y[i] - (drift?.get(ci)?.get(i) ?: 0.0)
+                    perSym[j].add(Obs(ci, y, base, j, pu0, pu1, cu0, cu1))
+                }
+                i++
+            }
+        }
+        // Branch costs: for symbol j, previous level a, this level b.
+        val M = Array(n) { Array(levels) { DoubleArray(levels) } }
+        for (j in 0 until n) for (b in 0 until levels) {
+            val ob = levelOn[b]
+            for (a in 0 until levels) {
+                if (j == 0 && a != 0) continue
+                val oa = levelOn[a]
+                var m = 0.0
+                for (o in perSym[j]) {
+                    var on = o.base + max(0.0, min(o.cu1, ob) - o.cu0)
+                    if (j > 0 && o.pu1 > o.pu0) on += max(0.0, min(o.pu1, oa) - o.pu0)
+                    val c = chans[o.ch]
+                    val e = o.y - c.F(on / expSec)
+                    m += e * e * c.w
+                }
+                M[j][a][b] = m
+            }
+        }
+        // Forward and backward best costs (min-sum), so every symbol gets a cost for every level.
+        val INF = Double.MAX_VALUE / 4
+        val allowed = { j: Int, b: Int -> forced[j] < 0 || forced[j] == b }
+        val fw = Array(n) { DoubleArray(levels) { INF } }
+        val back = Array(n) { IntArray(levels) }
+        for (j in 0 until n) for (b in 0 until levels) {
+            if (!allowed(j, b)) continue
+            if (j == 0) { fw[0][b] = M[0][0][b]; continue }
+            for (a in 0 until levels) { val c = fw[j - 1][a] + M[j][a][b]; if (c < fw[j][b]) { fw[j][b] = c; back[j][b] = a } }
+        }
+        val bw = Array(n) { DoubleArray(levels) { 0.0 } }
+        for (j in n - 2 downTo 0) for (a in 0 until levels) {
+            var best = INF
+            for (b in 0 until levels) if (allowed(j + 1, b) && fw[j][a] < INF) best = min(best, M[j + 1][a][b] + bw[j + 1][b])
+            bw[j][a] = best
+        }
+        val out = IntArray(n)
+        var s = (0 until levels).minByOrNull { fw[n - 1][it] } ?: 0
+        for (j in n - 1 downTo 0) { out[j] = s; s = back[j][s] }
+        lastSoft = Array(n) { j -> val c = DoubleArray(levels) { b -> if (fw[j][b] >= INF || bw[j][b] >= INF) INF else fw[j][b] + bw[j][b] }
+            val m0 = c.minOrNull() ?: 0.0; DoubleArray(levels) { (c[it] - m0).coerceAtMost(1e6) } }
+        return out
+    }
+
+    /** Per symbol, per level: how much worse than the best guess (0 = best). Set by the last viterbi call. */
+    private var lastSoft: Array<DoubleArray> = emptyArray()
+
+    /** Leftover slow change per channel picture (a person moving, a lamp), from a first decode. */
+    private fun driftFrom(chans: List<Chan>, w: BrightFormat.Wave, from: Double, to: Double): Array<DoubleArray> =
+        Array(chans.size) { ci ->
+            val c = chans[ci]; val s = c.s
+            val res = DoubleArray(s.t.size) { Double.NaN }
+            for (i in s.t.indices) {
+                val a = s.t[i] - c.t0
+                if (a < from || a + expSec > to) continue
+                res[i] = s.y[i] - c.F(w.light(a, a + expSec) / expSec)
+            }
+            val out = DoubleArray(s.t.size)
+            val half = 45
+            for (i in s.t.indices) {
+                var sum = 0.0; var n = 0
+                for (k in max(0, i - half)..min(s.t.size - 1, i + half)) if (!res[k].isNaN()) { sum += res[k]; n++ }
+                out[i] = if (n > 10) sum / n else 0.0
+            }
+            out
+        }
+
+    // ------------------------------------------------------------ whole message
+
+    /** Try to read one send whose sync starts near t0 (receiver clock). */
+    fun decode(series: List<Series>, t0: Double, syncCorr: Double): Result {
+        var chans = series.mapNotNull { timing(it, t0) }
+        val w = BrightFormat.syncWave()
+        chans.forEach { fit(it, w, w.end) }
+        chans = chans.filter { it.swing > 4 * it.sigma }.sortedByDescending { it.swing * it.swing * it.w }.take(24)
+        if (chans.isEmpty()) return Result(false, "sync seen but too weak to read", t0 = t0, syncCorr = syncCorr)
+
+        // Header: on/off at 30 or 15 per second; the one whose stamp is right wins.
+        val hs = BrightFormat.HDR_SYMS
+        var hdr: IntArray? = null; var rate = 0
+        for (tryRate in listOf(30, 15)) {
+            val ts = 1.0 / tryRate
+            val trial = BrightFormat.syncWave()
+            repeat(hs) { trial.add(ts, Double.NaN) }
+            val forced = IntArray(hs) { if (it < BrightFormat.BARKER.size) BrightFormat.BARKER[it] else -1 }
+            val syms = viterbi(chans, trial, BrightFormat.SYNC_SLOTS, hs, doubleArrayOf(0.0, ts), forced, tailKnown = false)
+            val bits = BrightFormat.unhamming(syms.copyOfRange(BrightFormat.BARKER.size, hs))
+            val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
+            if (stamp == MessageFormat.tag(pass, nonce)) { hdr = bits; rate = tryRate; for (k in 0 until hs) w.add(ts, if (syms[k] == 1) ts else 0.0); break }
+        }
+        val best0 = chans.first()
+        if (hdr == null) return Result(false, "header not read (or another passphrase)", t0 = t0, channels = chans.size, syncCorr = syncCorr,
+            snr = best0.swing / best0.sigma)
+        val nonce = bitsInt(hdr, 16, 16)
+        val modeId = bitsInt(hdr, 32, 4)
+        val tag = bitsInt(hdr, 36, 4)
+        val pminMs = bitsInt(hdr, 40, 4)
+        val len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
+        val mode = BrightFormat.MODES.getOrNull(modeId)
+        if (mode == null || mode.perSec != rate || len !in 1..BrightFormat.MAX_BYTES)
+            return Result(false, "header read but makes no sense (mode $modeId, length $len)", t0 = t0, channels = chans.size, syncCorr = syncCorr)
+        val lay = BrightFormat.Layout(mode, len)
+        val pmin = pminMs / 1000.0
+        val levelOn = DoubleArray(mode.levels) { mode.onSec(it, pmin) }
+        // Mode staircase is known: learn the brightness curve again with it.
+        for (l in BrightFormat.trainSymbols(mode)) w.add(mode.symSec, levelOn[l])
+        chans.forEach { fit(it, w, w.end) }
+        val best = chans.maxByOrNull { it.swing * it.swing * it.w }!!
+        // Body: pilots known, the rest unknown for now.
+        val nBody = lay.bodySyms
+        val (_, isPilot) = BrightFormat.withPilots(IntArray(lay.nData), mode)
+        val forced = IntArray(nBody) { -1 }
+        run { var pi = 0; for (j in isPilot.indices) if (isPilot[j]) { forced[j] = mode.pilot[pi % 4]; pi++ } }
+        for (j in 0 until nBody) w.add(mode.symSec, if (forced[j] >= 0) levelOn[forced[j]] else Double.NaN)
+        repeat(BrightFormat.TAIL) { w.add(BrightFormat.SLOT, 0.0) }
+
+        fun read(body: IntArray): Pair<IntArray, String?> {
+            val data = body.filterIndexed { j, _ -> !isPilot[j] }.toIntArray()
+            val nb = BrightFormat.codedBodyBitCount(len)
+            val coded = BrightFormat.symbolsToBits(data, mode, nb)
+            val soft = lastSoft.filterIndexed { j, _ -> !isPilot[j] }
+            val llr = BrightFormat.softBits(soft, mode, nb)
+            val ks = MessageFormat.keystream(pass, nonce, len + 2)
+            // Soft repair (capped, so one badly timed pulse can't shout down its neighbours), then plain repair.
+            for (plain in listOf(BrightFormat.softDecode(DoubleArray(llr.size) { llr[it].coerceIn(-SOFT_CAP, SOFT_CAP) }),
+                                 BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
+                val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
+                val crc = bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)
+                if (crc == MessageFormat.crc8(bytes)) return coded to String(bytes, Charsets.UTF_8)
+            }
+            return coded to null
+        }
+        var body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced)
+        var (coded, text) = read(body)
+        var note = "first pass"
+        if (text == null) {
+            // Second pass: put the first guesses in, remove slow changes, refit, read again.
+            for (j in 0 until nBody) w.on[lay.bodyFirst + j] = levelOn[body[j]]
+            val drift = driftFrom(chans, w, w.start[BrightFormat.SYNC_SLOTS], w.end)
+            chans.forEachIndexed { ci, c -> fit(c, w, w.end, drift[ci]) }
+            body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced, drift)
+            val r = read(body); coded = r.first; text = r.second
+            note = "second pass (slow changes removed)"
+        }
+        // How many of the mode's levels stand clearly apart on the best channel (gap > 3 x noise).
+        val lv = levelOn.map { best.F(it / mode.symSec) }
+        var apart = 1; var last = lv[0]
+        for (k in 1 until lv.size) if (lv[k] - last > 3 * best.sigma) { apart++; last = lv[k] }
+        val endT = t0 + w.end
+        return Result(text != null, if (text != null) "read" else "check byte wrong", text ?: "", mode, tag, nonce, len, pminMs, t0,
+            coded, body, chans.size, syncCorr, note, apart, best.swing / best.sigma, endT)
+    }
+
+    companion object {
+        /** Largest say one coded bit gets in soft repair (in units of squared noise). */
+        @JvmField var SOFT_CAP = 20.0
+        fun lowerBound(a: DoubleArray, v: Double): Int { var lo = 0; var hi = a.size; while (lo < hi) { val m = (lo + hi) / 2; if (a[m] < v) lo = m + 1 else hi = m }; return lo }
+        fun bitsInt(b: IntArray, from: Int, n: Int): Int { var v = 0; for (i in 0 until n) v = (v shl 1) or (if (from + i < b.size) b[from + i] else 0); return v }
+
+        /** Small linear solve (Gaussian elimination with pivoting). */
+        fun solve(a0: Array<DoubleArray>, b0: DoubleArray): DoubleArray? {
+            val n = b0.size
+            val a = Array(n) { a0[it].copyOf() }; val b = b0.copyOf()
+            for (c in 0 until n) {
+                var p = c
+                for (r in c + 1 until n) if (abs(a[r][c]) > abs(a[p][c])) p = r
+                if (abs(a[p][c]) < 1e-12) return null
+                val tr = a[c]; a[c] = a[p]; a[p] = tr; val tb = b[c]; b[c] = b[p]; b[p] = tb
+                for (r in c + 1 until n) { val f = a[r][c] / a[c][c]; for (k in c until n) a[r][k] -= f * a[c][k]; b[r] -= f * b[c] }
+            }
+            val x = DoubleArray(n)
+            for (r in n - 1 downTo 0) { var s = b[r]; for (k in r + 1 until n) s -= a[r][k] * x[k]; x[r] = s / a[r][r] }
+            return x
+        }
+    }
+}

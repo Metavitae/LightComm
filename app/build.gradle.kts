@@ -11,8 +11,8 @@ android {
         applicationId = "com.metavitae.lightlab"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 8
+        versionName = "0.8"
     }
 
     // Test-only key (not a release key) kept in the repo so every CI build can
@@ -33,4 +33,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.withType<Test> { testLogging { showStandardStreams = true; events("passed", "failed") } }
