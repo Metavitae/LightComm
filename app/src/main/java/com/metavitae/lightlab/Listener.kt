@@ -15,7 +15,6 @@ import kotlin.math.sin
  */
 class Listener(val flashesPerSec: Double) {
     data class Result(
-        val found: Boolean = false,
         val tSec: Double,
         val best: Double, val bestX: Int, val bestY: Int,   // best fine zone (sensor grid)
         val coarse: Double,                                 // best of the 8x6 big zones
