@@ -645,7 +645,11 @@ class MainActivity : Activity() {
         var lastGot = ""
         var frames = 0
 
-        val c = CamSession(this, cams[0].first, tv) { }
+        // Own pictures: flashlight state the camera reports, and whole-picture brightness (last ~20 s).
+        val own = ArrayDeque<String>()
+        val c = CamSession(this, cams[0].first, tv) { f ->
+            synchronized(own) { own.addLast(String.format(Locale.US, "%.4f,%d,%d,%d", f.tsNs / 1e9, f.flashState, f.mean, f.peak)); if (own.size > 600) own.removeFirst() }
+        }
         c.manual = false; c.fps = 30
         c.torchPattern = DuplexFormat.carrier(role)
         c.onError = { e -> runOnUiThread { heard.text = "Camera problem: $e" } }
@@ -701,7 +705,8 @@ class MainActivity : Activity() {
         col.button("Send message") { send(msgField.text.toString()) }
         fun save(): String {
             val head = Results.header("Two-way, ${role.name}") + "Blinking ${role.hz}/s, listening for ${other.hz}/s\n\n"
-            return Results.save(this, "twoway-${role.name.lowercase()}", head + log + "\nRAW CHANNEL (big zone)\n" + decoders[1].dump())
+            return Results.save(this, "twoway-${role.name.lowercase()}", head + log + "\nRAW CHANNEL (big zone)\n" + decoders[1].dump() +
+                "\nOWN PICTURES (time, flash state 3=on 2=ready, whole mean, peak)\n" + synchronized(own) { own.joinToString("\n") })
         }
         col.button("Save results (and keep going)") { heard.text = "Saved: ${save()}" }
         stopCurrent = {
