@@ -162,7 +162,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
             }
             val per = (zy / NB) * (zx / NC)
             var whole = 0f
-            for (i in 0 until NB * NC) { v[i] /= per; whole += v[i] }
+            for (i in 0 until NB * NC) { v[i] = v[i] / per; whole += v[i] }
             v[NB * NC] = whole / (NB * NC)
             count++
         }
