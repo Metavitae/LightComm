@@ -215,7 +215,8 @@ class CamSession(
                 if (m > best) { best = m; bi = i }
             }
             if (sink != null && fine != null) {
-                for (i in fine.indices) if (fineN!![i] > 0) fine[i] /= fineN[i]
+                val nn = fineN!!
+                for (i in fine.indices) if (nn[i] > 0) fine[i] = fine[i] / nn[i]
                 sink(img.timestamp, fine)
             }
             onFrame(Frame(img.timestamp, best, bi % gx, bi / gx, peak, (total / maxOf(1, n)).toInt(),
