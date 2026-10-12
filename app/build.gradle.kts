@@ -15,7 +15,7 @@ android {
         versionName = "0.1"
     }
 
-    // Fixed test key kept in this private repo so every CI build can
+    // Test-only key (not a release key) kept in the repo so every CI build can
     // update-install over the previous one on the test phones.
     signingConfigs {
         getByName("debug") {

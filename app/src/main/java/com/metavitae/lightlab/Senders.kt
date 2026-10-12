@@ -170,27 +170,36 @@ class IrSender(private val ctx: Context) {
         return "Infrared emitter present. Carrier frequencies allowed: $ranges"
     }
 
+    /**
+     * Each flash is sent as one transmit call filled with remote-control style
+     * pulses (560 us on, 560 us off at 38 kHz); the dark part is a pause.
+     * A first version used one long steady burst per flash, which the POCO's
+     * infrared service accepted but did not send.
+     */
     fun run(flashesPerSec: Double, seconds: Double, progress: (String) -> Unit): String {
         val sb = StringBuilder(Results.header("Infrared sender"))
         sb.append(describe()).append("\n")
         val ir = ctx.getSystemService(ConsumerIrManager::class.java)
         if (ir == null || !ir.hasIrEmitter()) return sb.toString()
-        val halfUs = (500_000 / flashesPerSec).toInt()
-        // One transmit call may last up to about 2 s, so send in chunks of whole flashes.
-        val perChunk = maxOf(1, (1_000_000 / (2 * halfUs)))
-        val pattern = IntArray(perChunk * 2) { halfUs }
-        sb.append("Flashes per second: $flashesPerSec, on time per flash: ${halfUs / 1000.0} ms, 38000 Hz carrier\n")
+        val halfMs = (500 / flashesPerSec).toLong()
+        val pairs = maxOf(1, (halfMs * 1000 / 1120).toInt())
+        val pattern = IntArray(pairs * 2) { 560 }
+        sb.append("Flashes per second: $flashesPerSec, lit time per flash: $halfMs ms as $pairs pulses of 560 us, 38000 Hz carrier\n")
         val start = SystemClock.elapsedRealtime()
         sb.append("Start elapsedRealtime: $start ms\n")
+        val callMs = mutableListOf<Double>()
         running = true
-        var chunks = 0
         try {
             while (running && SystemClock.elapsedRealtime() - start < seconds * 1000) {
+                val t0 = SystemClock.elapsedRealtime()
                 ir.transmit(38000, pattern)
-                chunks++
+                val took = SystemClock.elapsedRealtime() - t0
+                callMs.add(took.toDouble())
+                Thread.sleep(maxOf(0L, 2 * halfMs - took))
                 progress("Sending infrared... ${(SystemClock.elapsedRealtime() - start) / 1000} s")
             }
-            sb.append("Finished. ${chunks} chunks sent in ${SystemClock.elapsedRealtime() - start} ms (expected about ${chunks * perChunk * 2L * halfUs / 1000} ms of pattern).\n")
+            sb.append("Finished. Flashes sent: ${callMs.size}\n")
+            sb.append("Time each transmit call took (ms; about $halfMs means the phone really sent it): ${Stats(callMs).line("")}\n")
         } catch (e: Exception) {
             sb.append("Infrared refused: ${e.message}\n")
         }

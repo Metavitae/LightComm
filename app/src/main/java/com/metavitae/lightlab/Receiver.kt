@@ -19,8 +19,8 @@ class Receiver {
         if (frames.size < maxFrames) frames.add(f)
     }
 
-    /** The brightest-spot values of the last 5 seconds. */
-    fun recent(): List<Int> = synchronized(lock) { frames.takeLast(150).map { it.block } }
+    /** The brightest-pixel values of the last 5 seconds. A far light is a tiny dot, so the single pixel reads it best. */
+    fun recent(): List<Int> = synchronized(lock) { frames.takeLast(150).map { it.peak } }
 
     fun threshold(): Int {
         val v = recent()
@@ -31,7 +31,7 @@ class Receiver {
     fun liveLine(): String {
         val fr = synchronized(lock) { frames.takeLast(60) }
         if (fr.size < 5) return "Waiting for camera..."
-        val v = fr.map { it.block }
+        val v = fr.map { it.peak }
         val lo = v.minOrNull()!!
         val hi = v.maxOrNull()!!
         val t = (lo + hi) / 2
@@ -40,7 +40,7 @@ class Receiver {
         val secs = (fr.last().tsNs - fr.first().tsNs) / 1e9
         val fps = (fr.size - 1) / secs
         val clear = hi - lo > 30
-        return "Brightest spot now: ${v.last()}  (range $lo-$hi)\n" +
+        return "Brightest pixel now: ${v.last()}  (range $lo-$hi)\n" +
             (if (clear) "Light changes per second seen: ${String.format(Locale.US, "%.1f", changes / secs)}" else "No clear blinking seen") +
             "\nCamera speed: ${String.format(Locale.US, "%.1f", fps)} frames per second"
     }
