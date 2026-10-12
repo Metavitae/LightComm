@@ -472,8 +472,8 @@ class MainActivity : Activity() {
                                                else "Someone is signalling, but not for us\n(different passphrase, can't read it)"
                                 if (d.text + d.atSec != lastText) {
                                     lastText = d.text + d.atSec
-                                    log.append(String.format(Locale.US, "MESSAGE at %.1f s: \"%s\" speed=%s sureness=%.2f\n",
-                                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, if (d.forUs) d.text else "<someone else's passphrase>", sp.name, d.confidence))
+                                    log.append(String.format(Locale.US, "MESSAGE at %.1f s: \"%s\" speed=%s sureness=%.2f %s\n",
+                                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, if (d.forUs) d.text else "<someone else's passphrase>", sp.name, d.confidence, d.debug))
                                     tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
                                 }
                             }
@@ -515,7 +515,7 @@ class MainActivity : Activity() {
         }
         fun save(): String {
             val head = Results.header("Listen for us") + settings.text + "\nFound when small spot >= ${Listener.FOUND_SPOT}, big zone >= ${Listener.FOUND_ZONE} or whole picture >= ${Listener.FOUND_WHOLE}\n\nEVERY HALF SECOND\n"
-            return Results.save(this, "listen", head + log)
+            return Results.save(this, "listen", head + log + "\nRAW CHANNEL (fast decoder)\n" + decoders[1].dump())
         }
 
         col.button("Save results (and keep going)") { val p = save(); status.text = "Saved: $p"; log.setLength(0); log.append("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n") }

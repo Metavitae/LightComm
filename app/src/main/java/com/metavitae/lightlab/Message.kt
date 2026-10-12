@@ -112,6 +112,7 @@ class MessageSender(private val ctx: Context) {
         val sb = StringBuilder(Results.header("Message sender"))
         sb.append("Text: \"$text\"\nSpeed: ${sp.name} (0 = ${sp.f0} flashes/s, 1 = ${sp.f1} flashes/s, ${sp.bitSec} s per bit)\n")
         sb.append("Passphrase beacon rhythm: ${MessageFormat.beaconHz(pass)} flashes/s (passphrase itself not saved)\n")
+        sb.append("Debug: nonce=$nonce stamp=${MessageFormat.tag(pass, nonce)} bits=${MessageFormat.bits(text, pass, nonce).joinToString("")}\n")
         sb.append("Bits: ${MessageFormat.bits(text, pass, nonce).size}, one send takes ${"%.1f".format(sched.last().first)} s, repeats: $repeats\n")
         running = true
         val late = mutableListOf<Double>()
@@ -155,7 +156,10 @@ class MessageDecoder(private val sp: MessageFormat.Speed, private val pass: Stri
     fun reset() { t.clear(); v.clear() }
 
     /** forUs = false: a well-formed message with someone else's stamp (wrong passphrase); text is then empty. */
-    data class Decoded(val text: String, val confidence: Double, val atSec: Double, val forUs: Boolean = true)
+    data class Decoded(val text: String, val confidence: Double, val atSec: Double, val forUs: Boolean = true, val debug: String = "")
+
+    /** Raw channel readings, for checking a decode on a computer. */
+    fun dump(): String { val sb = StringBuilder(); for (i in t.indices) sb.append(String.format(java.util.Locale.US, "%.4f,%.2f\n", t[i], v[i])); return sb.toString() }
 
     /** +1 = clearly the fast rhythm (1), -1 = clearly the slow one (0). */
     private fun metric(from: Int, start: Double): Pair<Double, Int> {
@@ -231,7 +235,8 @@ class MessageDecoder(private val sp: MessageFormat.Speed, private val pass: Stri
         val nonce = readBits(16) ?: return null
         if (stamp != MessageFormat.tag(pass, nonce)) {
             // Clean, confident bits but not our stamp: someone signalling with another passphrase.
-            return if (conf.average() > 0.6) Decoded("", conf.average(), t0, forUs = false) else null
+            return if (conf.average() > 0.6) Decoded("", conf.average(), t0, forUs = false,
+                debug = "start=%.3f stamp=%d nonce=%d expected=%d".format(t0, stamp, nonce, MessageFormat.tag(pass, nonce))) else null
         }
         val ks0 = MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff
         val len = (readBits(8) ?: return null) xor ks0
