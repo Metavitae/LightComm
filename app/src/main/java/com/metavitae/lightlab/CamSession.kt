@@ -147,9 +147,46 @@ class CamSession(
             }
             b.set(CaptureRequest.FLASH_MODE, if (torch) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
             try {
-                s.setRepeatingRequest(b.build(), captureCb, handler)
+                val pat = torchPattern
+                if (pat != null) s.setRepeatingBurst(requests(b, pat), captureCb, handler)
+                else s.setRepeatingRequest(b.build(), captureCb, handler)
             } catch (e: Exception) {
                 onError("camera settings refused: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * When set, the flashlight follows this pattern one camera picture at a
+     * time, repeating (used for two-way talk: the camera itself blinks the light).
+     */
+    var torchPattern: BooleanArray? = null
+
+    /** Bursts queued but not finished yet. */
+    @Volatile var queuedBursts = 0
+
+    private fun requests(b: CaptureRequest.Builder, states: BooleanArray): List<CaptureRequest> = states.map { on ->
+        b.set(CaptureRequest.FLASH_MODE, if (on) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+        b.build()
+    }
+
+    /** Queue pictures with these flashlight states, one per picture, after anything already queued. */
+    fun queueTorch(states: BooleanArray) {
+        handler.post {
+            val b = builder ?: return@post
+            val s = session ?: return@post
+            try {
+                queuedBursts++
+                s.captureBurst(requests(b, states), object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(cs: CameraCaptureSession, r: CaptureRequest, res: TotalCaptureResult) {
+                        captureCb.onCaptureCompleted(cs, r, res)
+                    }
+                    override fun onCaptureSequenceCompleted(cs: CameraCaptureSession, id: Int, frame: Long) { queuedBursts-- }
+                    override fun onCaptureSequenceAborted(cs: CameraCaptureSession, id: Int) { queuedBursts-- }
+                }, handler)
+            } catch (e: Exception) {
+                queuedBursts--
+                onError("could not queue flashlight pattern: ${e.message}")
             }
         }
     }

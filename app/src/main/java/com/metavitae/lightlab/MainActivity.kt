@@ -41,6 +41,10 @@ class MainActivity : Activity() {
             // adb: --es mode message --es text HELLO --ei speed 0 --ei repeats 2   (speed 0 = 2 bits/s, 1 = 4 bits/s)
             "message" -> { intent.getStringExtra("pass")?.let { savePass(it) }; showTorch(autoMessage = Triple(intent.getStringExtra("text") ?: "HELLO",
                 intent.getIntExtra("speed", 0), intent.getIntExtra("repeats", 2))) }
+            // adb: --es mode duplex --es role caller|answerer [--es pass W] [--es text HI --ei after 8]
+            "duplex" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                withCamera { showDuplex(if (intent.getStringExtra("role") == "answerer") DuplexFormat.ANSWERER else DuplexFormat.CALLER,
+                    intent.getStringExtra("text"), intent.getIntExtra("after", 8)) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -118,6 +122,7 @@ class MainActivity : Activity() {
             button("3. Send with the screen") { onMenu = false; showScreenSetup() }
             button("4. Send with infrared") { onMenu = false; showIr() }
             button("5. Receive with the camera") { onMenu = false; withCamera { showReceiver() } }
+            button("7. Two-way: talk and listen at once") { onMenu = false; withCamera { showDuplex(DuplexFormat.CALLER, null, 0) } }
             button("6. Listen for us (no aiming needed)") { onMenu = false; withCamera { showListen(10.0) } }
         }
     }
@@ -600,6 +605,120 @@ class MainActivity : Activity() {
                 c.drawCircle(sx * w, sy * h, 40f, ring)
             }
         }
+    }
+
+
+    // ---------------------------------------------------------------- two-way
+
+    private fun showDuplex(role: DuplexFormat.Role, autoText: String?, autoAfter: Int) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val pass = savedPass()
+        val other = DuplexFormat.other(role)
+        val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
+        val col = column()
+        val sv = ScrollView(this)
+        sv.setBackgroundColor(Color.BLACK)
+        sv.addView(col)
+        col.text("Two-way: ${role.name}", 24f, bold = true)
+        col.text("This phone blinks ${role.hz} flashes/s and listens for ${other.hz} flashes/s. The other phone must be the ${other.name}. Passphrase: same on both.", 13f, color = Color.LTGRAY)
+        val heard = col.text("Starting camera...", 20f, bold = true, color = Color.rgb(255, 200, 0))
+        val sending = col.text("", 16f, color = Color.rgb(255, 200, 0))
+        val got = col.text("", 22f, bold = true, color = Color.rgb(120, 200, 255))
+        val tv = TextureView(this)
+        col.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200)))
+        val msgField = EditText(this).apply { setText(autoText ?: "HI"); setTextColor(Color.WHITE) }
+        col.addView(msgField)
+        setContentView(sv)
+
+        val log = StringBuilder("t_s,best_spot,best_big_zone,whole_picture,found\n")
+        val startedAt = SystemClock.elapsedRealtime()
+        fun now() = (SystemClock.elapsedRealtime() - startedAt) / 1000.0
+        var alive = true
+        val listener = Listener(other.hz)
+        var locked = false
+        val lockIdx = IntArray(3)
+        val decoders = List(3) { DuplexDecoder(other.hz, pass) }
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        var decoding = false
+        var lastGot = ""
+        var frames = 0
+
+        val c = CamSession(this, cams[0].first, tv) { }
+        c.manual = false; c.fps = 30
+        c.torchPattern = DuplexFormat.carrier(role)
+        c.onError = { e -> runOnUiThread { heard.text = "Camera problem: $e" } }
+        val sender = DuplexSender(c, role)
+        c.zoneSink = { ts, fine ->
+            listener.add(ts, fine)
+            frames++
+            if (locked) {
+                for (ch in 0 until 3) decoders[ch].add(ts / 1e9, Listener.channel(fine, ch, lockIdx[ch]))
+                if (frames % 60 == 0 && !decoding) {
+                    decoding = true
+                    val snaps = decoders.map { it.copy() }
+                    worker.execute {
+                        val res = snaps.mapNotNull { it.tryDecode() }
+                        val d = res.filter { it.forUs }.maxByOrNull { it.atSec } ?: res.firstOrNull()
+                        decoding = false
+                        if (d != null) runOnUiThread {
+                            if (!alive) return@runOnUiThread
+                            val key = d.text + d.forUs
+                            got.text = if (d.forUs) "RECEIVED: \"${d.text}\"" else "Someone is signalling, but not for us"
+                            if (key != lastGot) {
+                                lastGot = key
+                                log.append(String.format(Locale.US, "RECEIVED at %.1f s: \"%s\" forUs=%s sureness=%.2f\n", now(), d.text, d.forUs, d.confidence))
+                                tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
+                            }
+                        }
+                    }
+                }
+            }
+            if (frames % 15 == 0) listener.analyze()?.let { r ->
+                val found = r.best >= Listener.FOUND_SPOT || r.coarse >= Listener.FOUND_ZONE || r.whole >= Listener.FOUND_WHOLE
+                if (found) {
+                    val spot = r.bestY * CamSession.ZX + r.bestX
+                    if (!locked || spot != lockIdx[0]) { lockIdx[0] = spot; decoders[0].reset() }
+                    if (!locked || r.coarseIdx != lockIdx[1]) { lockIdx[1] = r.coarseIdx; decoders[1].reset() }
+                    if (!locked) { locked = true; log.append(String.format(Locale.US, "HEARD the %s at %.1f s\n", other.name, now())) }
+                }
+                log.append(String.format(Locale.US, "%.1f,%.1f,%.1f,%.1f,%d\n", now(), r.best, r.coarse, r.whole, if (found) 1 else 0))
+                runOnUiThread {
+                    if (!alive) return@runOnUiThread
+                    heard.text = if (found) "Hearing the ${other.name} (strength ${maxOf(r.best, r.coarse, r.whole).toInt()})"
+                                 else if (locked) "Lost the ${other.name}'s rhythm (still reading)" else "Listening for the ${other.name}..."
+                    heard.setTextColor(if (found) Color.rgb(80, 255, 120) else Color.rgb(255, 200, 0))
+                    sending.text = sender.progress.ifEmpty { "Blinking my rhythm (${role.hz} flashes/s)" }
+                }
+            }
+        }
+        fun send(text: String) {
+            if (sender.running) return
+            log.append(String.format(Locale.US, "SENDING at %.1f s: \"%s\"\n", now(), text))
+            Thread { sender.send(text, pass); log.append(String.format(Locale.US, "SENT done at %.1f s\n", now())) }.start()
+        }
+        col.button("Send message") { send(msgField.text.toString()) }
+        fun save(): String {
+            val head = Results.header("Two-way, ${role.name}") + "Blinking ${role.hz}/s, listening for ${other.hz}/s\n\n"
+            return Results.save(this, "twoway-${role.name.lowercase()}", head + log + "\nRAW CHANNEL (big zone)\n" + decoders[1].dump())
+        }
+        col.button("Save results (and keep going)") { heard.text = "Saved: ${save()}" }
+        stopCurrent = {
+            alive = false
+            sender.running = false
+            save()
+            c.close()
+            tone?.release()
+            worker.shutdown()
+        }
+        if (tv.isAvailable) c.open {} else tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { c.open {} }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        if (autoText != null) tv.postDelayed({ if (alive) send(autoText) }, autoAfter * 1000L)
     }
 
     /** Small live chart of the brightest-spot value. */
