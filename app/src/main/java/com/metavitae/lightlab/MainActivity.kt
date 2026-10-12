@@ -35,11 +35,12 @@ class MainActivity : Activity() {
         when (intent.getStringExtra("mode")) {
             "facts" -> withCamera { showFacts() }
             // adb: --es mode listen --ei rate 10     (rate = changes per second)
-            "listen" -> withCamera { showListen(intent.getIntExtra("rate", 10).toDouble()) }
+            // adb: --es mode listen [--es pass WORD]
+            "listen" -> { intent.getStringExtra("pass")?.let { savePass(it) }; withCamera { showListen(10.0) } }
             // adb: --es mode send --ei pattern 0 --ei rate 10 --ei seconds 30
             // adb: --es mode message --es text HELLO --ei speed 0 --ei repeats 2   (speed 0 = 2 bits/s, 1 = 4 bits/s)
-            "message" -> showTorch(autoMessage = Triple(intent.getStringExtra("text") ?: "HELLO",
-                intent.getIntExtra("speed", 0), intent.getIntExtra("repeats", 2)))
+            "message" -> { intent.getStringExtra("pass")?.let { savePass(it) }; showTorch(autoMessage = Triple(intent.getStringExtra("text") ?: "HELLO",
+                intent.getIntExtra("speed", 0), intent.getIntExtra("repeats", 2))) }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -70,6 +71,11 @@ class MainActivity : Activity() {
         super.onPause()
         if (!onMenu && pendingCamera == null) { leave(); showMenu() }
     }
+
+    private fun savedPass(): String =
+        getSharedPreferences("lightlab", MODE_PRIVATE).getString("pass", MessageFormat.DEFAULT_PASS) ?: MessageFormat.DEFAULT_PASS
+
+    private fun savePass(p: String) = getSharedPreferences("lightlab", MODE_PRIVATE).edit().putString("pass", MessageFormat.norm(p)).apply()
 
     private fun withCamera(f: () -> Unit) {
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) f()
@@ -173,11 +179,16 @@ class MainActivity : Activity() {
             button("Start (3 second countdown)") { go(pattern(), speeds[speed()], lengths[length()]) }
             button("Stop") { sender.running = false; msgSender.running = false }
             text("Send a message", 20f, bold = true)
+            text("Passphrase (both phones must use the same one)", 14f, color = Color.LTGRAY)
+            val passField = EditText(context).apply { setText(savedPass()); setTextColor(Color.WHITE) }
+            addView(passField)
+            text("Message", 14f, color = Color.LTGRAY)
             val msgField = EditText(context).apply {
                 setText("HELLO"); setTextColor(Color.WHITE); setHintTextColor(Color.GRAY); hint = "Short text, plain letters"
             }
             addView(msgField)
             for ((i, sp) in MessageFormat.SPEEDS.withIndex()) button("Send message at ${sp.name}") {
+                savePass(passField.text.toString())
                 sendMessage(msgSender, msgField.text.toString(), i, 2) { st -> status?.text = st }
             }
             if (tc != null && tc.second > 1) button("Step through brightness levels") {
@@ -197,7 +208,7 @@ class MainActivity : Activity() {
         Thread {
             for (i in 3 downTo 1) { runOnUiThread { show("Message starts in $i...") }; Thread.sleep(1000) }
             runOnUiThread { show("Sending beacon, then the message...") }
-            val r = ms.run(text.uppercase(), MessageFormat.SPEEDS[speed], repeats) { st -> runOnUiThread { show(st) } }
+            val r = ms.run(text.uppercase(), MessageFormat.SPEEDS[speed], repeats, savedPass()) { st -> runOnUiThread { show(st) } }
             val path = Results.save(this, "message-sent", r)
             runOnUiThread { show("Done. Saved: $path") }
         }.start()
@@ -392,8 +403,7 @@ class MainActivity : Activity() {
         onMenu = false
         val cams = CamSession.backCameras(this)
         if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
-        val rates = listOf(4.0, 10.0, 20.0)
-        var rateIdx = rates.indexOf(startRate).let { if (it < 0) 1 else it }
+        var pass = savedPass()
         val exposures = listOf<Long?>(null, 16_000_000L, 4_000_000L, 1_000_000L)  // null = automatic, then locked
         var expIdx = 0
         val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
@@ -416,7 +426,7 @@ class MainActivity : Activity() {
         setContentView(sv)
 
         var cam: CamSession? = null
-        var listener = Listener(rates[rateIdx] / 2)
+        var listener = Listener(MessageFormat.beaconHz(pass))
         val log = StringBuilder("t_s,best_spot,spot_x,spot_y,best_big_zone,whole_picture,found\n")
         var startedAt = 0L
         var lastBeep = 0L
@@ -424,18 +434,18 @@ class MainActivity : Activity() {
         val message = col.text("", 24f, bold = true, color = Color.rgb(120, 200, 255))
         // Once we hear us, follow that spot/zone and try to read a message from it.
         var lock: Pair<Int, Int>? = null   // (kind, index)
-        val decoders = MessageFormat.SPEEDS.map { MessageDecoder(it) }
+        var decoders = MessageFormat.SPEEDS.map { MessageDecoder(it, pass) }
         val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
         var decoding = false
         var lastText = ""
 
         fun describe() {
-            settings.text = "${cams[0].second}\nListening for: ${rates[rateIdx].toInt()} changes per second\n" +
+            settings.text = "${cams[0].second}\nPassphrase rhythm: ${MessageFormat.beaconHz(pass)} flashes per second\n" +
                 "Exposure: " + (exposures[expIdx]?.let { "fixed ${it / 1000} microseconds" } ?: "automatic, then locked")
         }
         fun start() {
             cam?.close()
-            listener = Listener(rates[rateIdx] / 2)
+            listener = Listener(MessageFormat.beaconHz(pass))
             val l = listener
             var frames = 0
             val c = CamSession(this, cams[0].first, tv) { }
@@ -458,11 +468,12 @@ class MainActivity : Activity() {
                             if (got != null) runOnUiThread {
                                 if (!alive) return@runOnUiThread
                                 val (sp, d) = got
-                                message.text = "MESSAGE: \"${d.text}\"\n(${sp.name}, sureness ${(d.confidence * 100).toInt()}%)"
+                                message.text = if (d.forUs) "MESSAGE: \"${d.text}\"\n(${sp.name}, sureness ${(d.confidence * 100).toInt()}%)"
+                                               else "Someone is signalling, but not for us\n(different passphrase, can't read it)"
                                 if (d.text + d.atSec != lastText) {
                                     lastText = d.text + d.atSec
                                     log.append(String.format(Locale.US, "MESSAGE at %.1f s: \"%s\" speed=%s sureness=%.2f\n",
-                                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, d.text, sp.name, d.confidence))
+                                        (SystemClock.elapsedRealtime() - startedAt) / 1000.0, if (d.forUs) d.text else "<someone else's passphrase>", sp.name, d.confidence))
                                     tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
                                 }
                             }
@@ -511,7 +522,14 @@ class MainActivity : Activity() {
         col.button("Listen again (forget where we heard us)") {
             lock = null; decoders.forEach { it.reset() }; message.text = ""; lastText = ""
         }
-        col.button("Change rhythm to listen for") { rateIdx = (rateIdx + 1) % rates.size; start() }
+        col.text("Passphrase (same as the sender)", 14f, color = Color.LTGRAY)
+        val passField = EditText(this).apply { setText(pass); setTextColor(Color.WHITE) }
+        col.addView(passField)
+        col.button("Use this passphrase") {
+            savePass(passField.text.toString()); pass = savedPass()
+            lock = null; decoders = MessageFormat.SPEEDS.map { MessageDecoder(it, pass) }; message.text = ""; lastText = ""
+            start()
+        }
         col.button("Change exposure") { expIdx = (expIdx + 1) % exposures.size; start() }
 
         stopCurrent = {
