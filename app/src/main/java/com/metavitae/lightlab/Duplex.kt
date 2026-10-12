@@ -24,10 +24,11 @@ object DuplexFormat {
         val hz get() = 15.0 / halfFrames
     }
 
-    val CALLER = Role("Caller", 2)
-    val ANSWERER = Role("Answerer", 3)
-    const val BIT_FRAMES = 12
-    const val BIT_SEC = BIT_FRAMES / 30.0
+    // Adjustable for testing (adb extras): how many pictures the light stays on/off, and pictures per bit.
+    var CALLER = Role("Caller", 2)
+    var ANSWERER = Role("Answerer", 3)
+    var BIT_FRAMES = 12
+    val BIT_SEC get() = BIT_FRAMES / 30.0
 
     fun other(r: Role) = if (r == CALLER) ANSWERER else CALLER
 

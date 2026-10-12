@@ -43,6 +43,10 @@ class MainActivity : Activity() {
                 intent.getIntExtra("speed", 0), intent.getIntExtra("repeats", 2))) }
             // adb: --es mode duplex --es role caller|answerer [--es pass W] [--es text HI --ei after 8]
             "duplex" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                // test overrides: --ei halfA 4 --ei halfB 6 --ei bit 24
+                DuplexFormat.CALLER = DuplexFormat.Role("Caller", intent.getIntExtra("halfA", DuplexFormat.CALLER.halfFrames))
+                DuplexFormat.ANSWERER = DuplexFormat.Role("Answerer", intent.getIntExtra("halfB", DuplexFormat.ANSWERER.halfFrames))
+                DuplexFormat.BIT_FRAMES = intent.getIntExtra("bit", DuplexFormat.BIT_FRAMES)
                 withCamera { showDuplex(if (intent.getStringExtra("role") == "answerer") DuplexFormat.ANSWERER else DuplexFormat.CALLER,
                     intent.getStringExtra("text"), intent.getIntExtra("after", 8)) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
