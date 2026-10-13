@@ -56,9 +56,9 @@ class MainActivity : Activity() {
             // adb: --es mode bright-send [--es modes 0,1,2,3,4] [--es msgs 0,1,2,3] [--ei repeats 10] [--ei gap 3] [--ei beacon 0] [--es text "..."] [--es pass W]
             "bright-send" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 showBrightSend(BrightRunPlan.from(intent)) }
-            // adb: --es mode bright-recv [--es room dim|lit] [--es paces 5] [--ei iso 0 (0 = automatic)] [--es pass W]
+            // adb: --es mode bright-recv [--es room dim|lit] [--es paces 5] [--ei iso 0 (0 = automatic)] [--ei trace 90 (seconds of raw brightness saved after ready)] [--es pass W]
             "bright-recv" -> { intent.getStringExtra("pass")?.let { savePass(it) }
-                withCamera { showBrightRecv(intent.getStringExtra("room") ?: "dim", intent.getStringExtra("paces") ?: "hand-width", intent.getIntExtra("iso", 0)) } }
+                withCamera { showBrightRecv(intent.getStringExtra("room") ?: "dim", intent.getStringExtra("paces") ?: "hand-width", intent.getIntExtra("iso", 0), intent.getIntExtra("trace", 0)) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -908,7 +908,7 @@ class MainActivity : Activity() {
         if (plan != null) run(plan)
     }
 
-    private fun showBrightRecv(room0: String, paces0: String, isoFixed: Int) {
+    private fun showBrightRecv(room0: String, paces0: String, isoFixed: Int, traceSec: Int = 0) {
         onMenu = false
         val cams = CamSession.backCameras(this)
         if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
@@ -924,7 +924,7 @@ class MainActivity : Activity() {
         val tallyView = pg.info.text("", 13f)
         val exp = 0.0325
         val rx = BrightListener(this, savedPass(), exp)
-        rx.room = room0; rx.paces = paces0
+        rx.room = room0; rx.paces = paces0; rx.traceSec = traceSec.toDouble()
         val file = LiveFile(this, "bright-recv")
         val c = CamSession(this, cams[0].first, tv) { }
         c.manual = true; c.fps = 30; c.expNs = (exp * 1e9).toLong(); c.iso = if (isoFixed > 0) isoFixed else 400
@@ -979,6 +979,7 @@ class MainActivity : Activity() {
                 if (!alive) return
                 worker.execute {
                     val lines = try { rx.scan() } catch (e: Exception) { listOf("# scan problem: ${e.message}\n") }
+                    rx.takeTrace()?.let { t -> LiveFile(this@MainActivity, "bright-trace").also { it.append(t); file.append("# brightness recording saved: ${it.path}\n") } }
                     for (l in lines) file.append(l)
                     if (lines.isNotEmpty()) runOnUiThread {
                         if (!alive) return@runOnUiThread

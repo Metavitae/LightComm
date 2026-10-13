@@ -157,6 +157,10 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     /** Receiver clock time from which pictures count (set once the sensitivity has settled); 0 = not ready yet. */
     @Volatile var readyAt = 0.0
     private var lastWeakT = -1e9
+    /** Seconds of raw brightness to record after "ready" (0 = none), for replaying a miss on the computer. */
+    @Volatile var traceSec = 0.0
+    private val trace = StringBuilder()
+    private var traceDone = false
     @Volatile var lux = Float.NaN
     @Volatile var room = "dim"
     @Volatile var paces = "hand-width"
@@ -182,6 +186,13 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
             for (i in 0 until NB * NC) { v[i] = v[i] / per; whole += v[i] }
             v[NB * NC] = whole / (NB * NC)
             count++
+            if (traceSec > 0 && readyAt > 0 && !traceDone && times[k] >= readyAt) {
+                if (times[k] - readyAt <= traceSec) {
+                    trace.append(String.format(Locale.US, "%.5f", times[k] - readyAt))
+                    for (x in v) trace.append(',').append(Math.round(x * 10) / 10.0)   // cheap: runs on every picture
+                    trace.append('\n')
+                } else traceDone = true
+            }
         }
     }
 
@@ -203,6 +214,13 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         List(NCH) { ch -> BrightDecoder.Series(t, DoubleArray(idx.size) { vals[idx[it]][ch].toDouble() }) }
     }
 
+    /** The finished recording, once (seconds after ready, 96 blocks, whole picture). */
+    fun takeTrace(): String? = synchronized(lock) {
+        if (!traceDone || trace.isEmpty()) return null
+        val out = "t_after_ready," + (0 until NB * NC).joinToString(",") { "b$it" } + ",whole\n" + trace
+        trace.setLength(0); out
+    }
+
     fun newest(): Double = synchronized(lock) { if (count == 0L) 0.0 else times[((count - 1) % CAP).toInt()] }
 
     private val dec = BrightDecoder(pass, expSec)
@@ -222,7 +240,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         val t0 = starts.minByOrNull { it.first } ?: run {
             scanFrom = maxOf(scanFrom, now - syncLen - 2)
             // Near-miss note: a sync-like shape that was too weak to read, so a miss shows which side lost it.
-            val weak = dec.findStarts(ws[NB * NC], from, now - syncLen - 0.3, 0.5).firstOrNull()
+            val weak = dec.findStarts(ws[NB * NC], from, now - syncLen - 0.3, 0.65).firstOrNull()
             if (weak != null && weak.first - lastWeakT > 1.0) {
                 lastWeakT = weak.first
                 return listOf(String.format(Locale.US, "# weak sync, not read: %.1f s after ready, match %.2f\n", weak.first - readyAt, weak.second))

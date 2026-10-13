@@ -76,11 +76,12 @@ right_count() {  # mode id -> number of RIGHT lines for that mode in the receive
   lines "$RX" "$RXFILE" | awk -F, -v m="$1" '$4==m && $7=="RIGHT"' | wc -l
 }
 
-# Link check: one practice send ("LINK CHECK", 2 levels) must be read before the block counts.
+# Link check: one practice send ("LINK", 2 levels) must be read before the block counts.
+# (Its length matches no test message, so it is never compared with the wrong one.)
 link_ok=0
 for try in 1 2; do
   before=$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')
-  send 0 x 1 "LINK CHECK"
+  send 0 x 1 "LINK"
   [ "$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')" -gt "$before" ] && { link_ok=1; break; }
   echo "  link check $try not read"
 done
