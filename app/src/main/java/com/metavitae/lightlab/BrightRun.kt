@@ -49,7 +49,20 @@ class BrightSender(private val ctx: Context) {
     @Volatile var running = false
 
     data class Sent(val text: String, val mode: BrightFormat.Mode, val nonce: Int, val pminMs: Int, val startMs: Long,
-                    val seconds: Double, val lateUs: Stats, val callUs: Stats, val failure: String?)
+                    val seconds: Double, val lateUs: Stats, val callUs: Stats, val firstCallUs: Double, val failure: String?)
+
+    /**
+     * One blink before the first send of a run, so a flashlight that has been idle for a
+     * while is awake before the sync plays. Returns how long its first switch took (us).
+     */
+    fun warmUp(): Double {
+        val cm = ctx.getSystemService(CameraManager::class.java)
+        val id = torchCamera(ctx)?.first ?: return 0.0
+        return try {
+            val c0 = System.nanoTime(); cm.setTorchMode(id, true); val us = (System.nanoTime() - c0) / 1000.0
+            Thread.sleep(200); cm.setTorchMode(id, false); Thread.sleep(1500); us
+        } catch (_: Exception) { 0.0 }
+    }
 
     private fun waitUntil(t: Long) {
         while (true) {
@@ -62,7 +75,7 @@ class BrightSender(private val ctx: Context) {
     /** One send. beaconSec > 0 plays the passphrase rhythm first (for "Listen for us"). */
     fun send(text: String, mode: BrightFormat.Mode, pass: String, beaconSec: Double, progress: (String) -> Unit): Sent {
         val cm = ctx.getSystemService(CameraManager::class.java)
-        val id = torchCamera(ctx)?.first ?: return Sent(text, mode, 0, 0, 0, 0.0, Stats(emptyList()), Stats(emptyList()), "no flashlight")
+        val id = torchCamera(ctx)?.first ?: return Sent(text, mode, 0, 0, 0, 0.0, Stats(emptyList()), Stats(emptyList()), 0.0, "no flashlight")
         try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
         val nonce = java.security.SecureRandom().nextInt(65536)
         val late = ArrayList<Double>(); val calls = ArrayList<Double>()
@@ -107,16 +120,17 @@ class BrightSender(private val ctx: Context) {
         try { cm.setTorchMode(id, false) } catch (_: Exception) {}
         val ok = running
         running = false
-        return Sent(text, mode, nonce, pmin, startMs, offset + s.wave.end, Stats(late), Stats(calls.map { it * 1e6 }), failure ?: if (!ok) "stopped" else null)
+        return Sent(text, mode, nonce, pmin, startMs, offset + s.wave.end, Stats(late), Stats(calls.map { it * 1e6 }),
+            calls.firstOrNull()?.times(1e6) ?: 0.0, failure ?: if (!ok) "stopped" else null)
     }
 
     /** Line for the sender's results file. */
-    fun line(i: Int, s: Sent) = String.format(Locale.US, "%d,%s,%d,%d,%d,%d,%.1f,%.0f,%.0f,%.0f,%s,\"%s\"\n",
-        i, Build.MODEL, s.mode.id, s.mode.levels, s.mode.perSec, s.pminMs, s.seconds, s.lateUs.mean, s.callUs.mean, s.callUs.pct(0.95),
+    fun line(i: Int, s: Sent) = String.format(Locale.US, "%d,%s,%d,%d,%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f,%s,\"%s\"\n",
+        i, Build.MODEL, s.mode.id, s.mode.levels, s.mode.perSec, s.pminMs, s.seconds, s.lateUs.mean, s.callUs.mean, s.callUs.pct(0.95), s.firstCallUs,
         s.failure ?: "ok", s.text.replace("\"", "'"))
 
     companion object {
-        const val HEAD = "send,phone,mode,levels,per_sec,shortest_pulse_ms,seconds,late_us_mean,switch_us_mean,switch_us_p95,status,text\n"
+        const val HEAD = "send,phone,mode,levels,per_sec,shortest_pulse_ms,seconds,late_us_mean,switch_us_mean,switch_us_p95,first_switch_us,status,text\n"
     }
 }
 
@@ -140,6 +154,9 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     private var count = 0L     // frames ever added
     private val lock = Any()
     @Volatile var scanFrom = 0.0
+    /** Receiver clock time from which pictures count (set once the sensitivity has settled); 0 = not ready yet. */
+    @Volatile var readyAt = 0.0
+    private var lastWeakT = -1e9
     @Volatile var lux = Float.NaN
     @Volatile var room = "dim"
     @Volatile var paces = "hand-width"
@@ -193,8 +210,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     /** Look for new sends and read the ones that are complete. Returns lines to log. */
     fun scan(): List<String> {
         val now = newest()
-        if (now == 0.0) return emptyList()
-        if (scanFrom == 0.0) scanFrom = now - 5
+        if (now == 0.0 || readyAt == 0.0) return emptyList()
+        if (scanFrom < readyAt) scanFrom = readyAt
         val syncLen = BrightFormat.syncWave().end
         val from = maxOf(scanFrom, now - 140)
         if (now - from < syncLen + 1) return emptyList()
@@ -202,7 +219,16 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         // Find the sync on the whole picture and on the 4 liveliest blocks.
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
         val starts = (listOf(NB * NC) + lively).flatMap { dec.findStarts(ws[it], from, now - syncLen - 0.3, 0.8) }
-        val t0 = starts.minByOrNull { it.first } ?: run { scanFrom = maxOf(scanFrom, now - syncLen - 2); return emptyList() }
+        val t0 = starts.minByOrNull { it.first } ?: run {
+            scanFrom = maxOf(scanFrom, now - syncLen - 2)
+            // Near-miss note: a sync-like shape that was too weak to read, so a miss shows which side lost it.
+            val weak = dec.findStarts(ws[NB * NC], from, now - syncLen - 0.3, 0.5).firstOrNull()
+            if (weak != null && weak.first - lastWeakT > 1.0) {
+                lastWeakT = weak.first
+                return listOf(String.format(Locale.US, "# weak sync, not read: %.1f s after ready, match %.2f\n", weak.first - readyAt, weak.second))
+            }
+            return emptyList()
+        }
         val c = starts.filter { kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
         val all = window(t0.first - 0.5, now)
         val r = dec.decode(all, t0.first, c)

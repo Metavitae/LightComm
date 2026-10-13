@@ -869,6 +869,8 @@ class MainActivity : Activity() {
                 val file = LiveFile(this, "bright-send")
                 file.append(Results.header("Brightness messages, sender") + "Plan: ${p.describe()}\nPassphrase rhythm: ${MessageFormat.beaconHz(savedPass())} /s (passphrase itself not saved)\n\n" + BrightSender.HEAD)
                 for (i in 3 downTo 1) { runOnUiThread { status?.text = "Starting in $i..." }; Thread.sleep(1000) }
+                runOnUiThread { status?.text = "Waking the flashlight..." }
+                file.append(String.format(Locale.US, "# warm-up blink: first switch took %.0f us\n", sender.warmUp()))
                 var k = 0
                 val total = p.sends.size
                 for ((mode, text) in p.sends) {
@@ -950,11 +952,19 @@ class MainActivity : Activity() {
         }
         rx.startLux()
         // Automatic sensitivity once, after 2 s: aim for a background around 40 of 255.
-        if (isoFixed <= 0) tv.postDelayed({
+        // Then 1.5 s more for the camera to settle; only pictures after that count ("# ready" line).
+        tv.postDelayed({
             if (!alive) return@postDelayed
             val bg = rx.background()
-            if (bg > 0.5) { c.iso = (c.iso * 40.0 / bg).toInt().coerceIn(100, 1600); rx.iso = c.iso; c.apply()
+            if (isoFixed <= 0 && bg > 0.5) { c.iso = (c.iso * 40.0 / bg).toInt().coerceIn(100, 1600); rx.iso = c.iso; c.apply()
                 file.append("# automatic ISO: background was ${"%.1f".format(bg)} at ISO 400, now ISO ${c.iso}\n") }
+            tv.postDelayed({
+                if (!alive) return@postDelayed
+                val now = rx.newest()
+                if (now == 0.0) { file.append("# ready: NO PICTURES from the camera\n"); return@postDelayed }
+                rx.readyAt = now
+                file.append("# ready: listening, background ${"%.1f".format(rx.background())}\n")
+            }, 1500)
         }, 2000)
         val ticker = object : Runnable {
             override fun run() {

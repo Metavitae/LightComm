@@ -34,24 +34,18 @@ adb -s "$RX" shell am start -S -n $APP --es mode bright-recv --es room "$ROOM" -
 LAST_TX=$(newest "$TX" "LightLab_bright-send_*")
 # Handshake (idea from The Batsight): don't guess a delay; wait until the receiver says it has settled.
 RXFILE=""
+# The receiver writes "# ready" once its sensitivity is set and the camera has settled.
 for i in $(seq 1 30); do
   sleep 1; f=$(newest "$RX" "LightLab_bright-recv_*")
   [ -n "$f" ] && [ "$f" != "$OLD_RX" ] && RXFILE=$f
-  [ -n "$RXFILE" ] && [ "$i" -ge 6 ] && break   # receiver sets its sensitivity at 2 s; give it 4 s more of pictures
+  [ -n "$RXFILE" ] && lines "$RX" "$RXFILE" | grep -q '^# ready' && break
 done
 [ -n "$RXFILE" ] || { echo "Receiver did not start."; exit 1; }
-echo "Receiver file: $RXFILE"
+ready=$(lines "$RX" "$RXFILE" | grep -m1 '^# ready')
+[ -n "$ready" ] || { echo "Receiver never said ready. Block stopped."; exit 1; }
+echo "$ready" | grep -q 'NO PICTURES' && { echo "Receiver camera gave no pictures. Block stopped."; exit 1; }
+echo "Receiver file: $RXFILE ($ready)"
 
-# Link check: one practice send ("LINK CHECK", 2 levels) must be read before the block counts.
-link_ok=0
-for try in 1 2; do
-  before=$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')
-  send 0 x 1 "LINK CHECK"
-  [ "$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')" -gt "$before" ] && { link_ok=1; break; }
-  echo "  link check $try not read"
-done
-[ "$link_ok" = 1 ] || { echo "LINK CHECK FAILED: the receiver did not read the practice send. Block stopped."; adb -s "$RX" shell input keyevent KEYCODE_BACK; exit 1; }
-echo "  link check read: block starts (the practice send is not counted below)"
 
 send() {  # modes msgs repeats -> waits until the sender has logged all sends
   local m=$1 msgs=$2 n=$3 text=${4:-}
@@ -81,6 +75,17 @@ send() {  # modes msgs repeats -> waits until the sender has logged all sends
 right_count() {  # mode id -> number of RIGHT lines for that mode in the receiver file
   lines "$RX" "$RXFILE" | awk -F, -v m="$1" '$4==m && $7=="RIGHT"' | wc -l
 }
+
+# Link check: one practice send ("LINK CHECK", 2 levels) must be read before the block counts.
+link_ok=0
+for try in 1 2; do
+  before=$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')
+  send 0 x 1 "LINK CHECK"
+  [ "$(lines "$RX" "$RXFILE" | grep -c ',RIGHT,')" -gt "$before" ] && { link_ok=1; break; }
+  echo "  link check $try not read"
+done
+[ "$link_ok" = 1 ] || { echo "LINK CHECK FAILED: the receiver did not read the practice send. Block stopped."; adb -s "$RX" shell input keyevent KEYCODE_BACK; exit 1; }
+echo "  link check read: block starts (the practice send is not counted below)"
 
 for m in $(echo "$MODES" | tr ',' ' '); do
   before=$(right_count "$m")
