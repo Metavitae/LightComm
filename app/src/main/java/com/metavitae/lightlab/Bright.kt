@@ -22,7 +22,7 @@ import kotlin.math.sqrt
  *   sender also measures its own switch time | start mark (Barker 7) | header | mode
  *   staircase (each level held 3 symbols, low to high) | text, with a pilot mini-staircase
  *   after every 32 symbols | dark tail.
- * Start mark and header are on/off only, at the text's speed (30 or 15 symbols per second).
+ * Start mark and header are on/off only, at the text's speed (30, 15 or 10 symbols per second).
  * Header: stamp 16 | nonce 16 | mode 4 | phone tag 4 | shortest pulse (ms) 4 | length 8 | header check byte 8 (Hamming 7/4, interleaved).
  * Text: UTF-8 bytes + 16-bit check (CRC-16), scrambled with the passphrase, Hamming 7/4, interleaved.
  */
@@ -67,7 +67,13 @@ object BrightFormat {
         Mode(2, 4, 15, 1, 2),
         Mode(3, 5, 15, 4, 9),
         Mode(4, 8, 15, 1, 3),
+        // Long range (Oct 13, 5-6 m: 4 levels at 15/s beat 2 levels at 30/s): longer pulses carry more light per symbol.
+        Mode(5, 2, 15, 1, 1),
+        Mode(6, 2, 10, 1, 1),
+        Mode(7, 4, 10, 1, 2),
     )
+    /** Every text speed in use, fastest first (the receiver tries the header at each). */
+    val RATES: List<Int> = MODES.map { it.perSec }.distinct().sortedDescending()
 
     val TEST_MESSAGES = listOf(
         "HOLA AMIGO",
@@ -355,6 +361,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         val coded: IntArray? = null, val bodySyms: IntArray? = null, val channels: Int = 0,
         val syncCorr: Double = 0.0, val note: String = "", val levelsApart: Int = 0, val snr: Double = 0.0, val endT: Double = 0.0,
         val symbolsChecked: Int = 0, val pilotErrors: Int = 0,
+        /** Which of the given series carried the send (for the receiver to keep watching those spots). */
+        val blocks: List<Int> = emptyList(),
     )
 
     /** Per-channel timing and brightness curve. */
@@ -592,10 +600,13 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         var chans = series.mapNotNull { timing(it, t0) }
         val w = BrightFormat.syncWave()
         chans.forEach { fit(it, w, w.end) }
-        chans = chans.filter { it.swing > 4 * it.sigma }.sortedByDescending { it.swing * it.swing * it.w }.take(24)
+        // Clear channels first; if none (far away), try the faint ones: the stamp and check bytes still guard the text.
+        val clear = chans.filter { it.swing > 4 * it.sigma }
+        val faint = clear.isEmpty()
+        chans = (if (faint) chans.filter { it.swing > WEAK_SWING * it.sigma } else clear).sortedByDescending { it.swing * it.swing * it.w }.take(24)
         if (chans.isEmpty()) return Result(false, "sync seen but too weak to read", t0 = t0, syncCorr = syncCorr)
 
-        // Header: on/off at 30 or 15 per second; the one whose stamp is right wins.
+        // Header: on/off at each text speed in use; the one whose stamp is right wins.
         val hs = BrightFormat.HDR_SYMS
         var hdr: IntArray? = null; var rate = 0
         var headerNote = ""
@@ -603,7 +614,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
             return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52))
         }
-        rates@ for (tryRate in listOf(30, 15)) {
+        rates@ for (tryRate in BrightFormat.RATES) {
             val ts = 1.0 / tryRate
             val trial = BrightFormat.syncWave()
             repeat(hs) { trial.add(ts, Double.NaN) }
@@ -672,6 +683,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         }
         var body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced)
         var (coded, text) = read(body)
+        if (faint) headerNote = "faint; " + headerNote
         var note = headerNote + "first pass"
         // More passes if needed: follow slow changes (shadows, lamps), guess-free first, then from the latest guesses.
         for (pass in 2..3) {
@@ -689,7 +701,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         for (k in 1 until lv.size) if (lv[k] - last > 3 * best.sigma) { apart++; last = lv[k] }
         val endT = t0 + w.end
         return Result(text != null, if (text != null) "read" else "check byte wrong", text ?: "", mode, tag, nonce, len, pminMs, t0,
-            coded, body, chans.size, syncCorr, note, apart, best.swing / best.sigma, endT)
+            coded, body, chans.size, syncCorr, note, apart, best.swing / best.sigma, endT,
+            blocks = chans.map { c -> series.indexOfFirst { it === c.s } }.filter { it >= 0 })
     }
 
     companion object {
@@ -700,6 +713,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         @JvmField var ENV_HALF = 12
         /** Largest say one coded bit gets in soft repair (in units of squared noise). */
         @JvmField var SOFT_CAP = 20.0
+        /** Faintest channel still tried when no channel is clear (swing over noise). */
+        @JvmField var WEAK_SWING = 2.0
         fun lowerBound(a: DoubleArray, v: Double): Int { var lo = 0; var hi = a.size; while (lo < hi) { val m = (lo + hi) / 2; if (a[m] < v) lo = m + 1 else hi = m }; return lo }
         fun bitsInt(b: IntArray, from: Int, n: Int): Int { var v = 0; for (i in 0 until n) v = (v shl 1) or (if (from + i < b.size) b[from + i] else 0); return v }
 

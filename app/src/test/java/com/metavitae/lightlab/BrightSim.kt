@@ -133,7 +133,7 @@ object BrightSim {
         val verbose = args.getOrNull(3) == "v"
         args.getOrNull(4)?.toDouble()?.let { BrightDecoder.SOFT_CAP = it }
         args.getOrNull(5)?.let { kv -> kv.split(";").forEach { val (k, v) = it.split("="); when (k) {
-            "exp" -> realExp = v.toDouble(); "patch" -> patchWidth = v.toDouble(); "ppm" -> ppm = v.toDouble(); "person" -> personAt = v.toDouble(); "env" -> BrightDecoder.ENV_HALF = v.toInt() } } }
+            "exp" -> realExp = v.toDouble(); "patch" -> patchWidth = v.toDouble(); "ppm" -> ppm = v.toDouble(); "person" -> personAt = v.toDouble(); "env" -> BrightDecoder.ENV_HALF = v.toInt(); "weak" -> BrightDecoder.WEAK_SWING = v.toDouble() } } }
         println("stress: real exposure ${realExp * 1000} ms (decoder assumes 32.5), patch $patchWidth blocks, clock $ppm ppm, person at $personAt s")
         println("SIMULATED (not measured). reps=$reps per cell, noise scale 1/$scale, soft cap ${BrightDecoder.SOFT_CAP}")
         println("mode | room | sender->receiver | right | bit errors before repair | seconds per send (msg 2)")

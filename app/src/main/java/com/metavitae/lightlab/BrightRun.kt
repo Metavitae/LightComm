@@ -157,6 +157,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     /** Receiver clock time from which pictures count (set once the sensitivity has settled); 0 = not ready yet. */
     @Volatile var readyAt = 0.0
     private var lastWeakT = -1e9
+    /** Blocks that carried the last send read right (up to 6), searched for the next sync too. */
+    private var known: List<Int> = emptyList()
     /** Seconds of raw brightness to record after "ready" (0 = none), for replaying a miss on the computer. */
     @Volatile var traceSec = 0.0
     private val trace = StringBuilder()
@@ -235,8 +237,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         if (now - from < syncLen + 1) return emptyList()
         val ws = window(from - 0.1, now)
         // Find the sync on the whole picture and on the 4 liveliest blocks.
+        // Where to look for a sync: the whole picture, the liveliest blocks (people and pets moving are lively too),
+        // and the blocks that carried our last read send (a small far light is easy to lose among the lively ones).
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
-        val starts = (listOf(NB * NC) + lively).flatMap { dec.findStarts(ws[it], from, now - syncLen - 0.3, 0.8) }
+        val search = (listOf(NB * NC) + lively + known).distinct()
+        val starts = search.flatMap { dec.findStarts(ws[it], from, now - syncLen - 0.3, 0.8) }
         val t0 = starts.minByOrNull { it.first } ?: run {
             scanFrom = maxOf(scanFrom, now - syncLen - 2)
             // Near-miss note: a sync-like shape that was too weak to read, so a miss shows which side lost it.
@@ -250,10 +255,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         val c = starts.filter { kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
         val all = window(t0.first - 0.5, now)
         val r = dec.decode(all, t0.first, c)
-        val headerDone = t0.first + syncLen + BrightFormat.HDR_SYMS / 15.0 + 1.0
+        val headerDone = t0.first + syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last() + 1.0
         if (r.mode != null && r.endT > now) return emptyList()         // header read, rest still coming
         if (r.mode == null && now < headerDone) return emptyList()       // wait for the header at the slow speed
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
+        if (r.ok) known = r.blocks.filter { it < NB * NC }.take(6)
         return listOf(logLine(r))
     }
 
