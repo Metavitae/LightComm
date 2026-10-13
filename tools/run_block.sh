@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs one block of the brightness-message test over adb (both phones connected).
 #   tools/run_block.sh <room: dim|lit> <sender: poco|8t> [paces] [modes, default 0,1,2,3,4] [repeats, default 10]
+#   TRACE=120 tools/run_block.sh ...   also saves the receiver's raw brightness for 120 s after ready
 # The receiver is the other phone. Inside each mode: the two short messages first;
 # if fewer than 6 of those 20 are read right, the two long ones are skipped (noted).
 # Results stay on the phones in Download/LightLab and are pulled to ./results/.
@@ -30,7 +31,7 @@ lines() { adb -s "$1" shell "cat '$2'" | tr -d '\r'; }
 # Receiver first (it needs ~3 s to set its sensitivity).
 adb -s "$RX" shell input keyevent KEYCODE_WAKEUP
 OLD_RX=$(newest "$RX" "LightLab_bright-recv_*")
-adb -s "$RX" shell am start -S -n $APP --es mode bright-recv --es room "$ROOM" --es paces "$PACES" >/dev/null
+adb -s "$RX" shell am start -S -n $APP --es mode bright-recv --es room "$ROOM" --es paces "$PACES" ${TRACE:+--ei trace $TRACE} >/dev/null
 LAST_TX=$(newest "$TX" "LightLab_bright-send_*")
 # Handshake (idea from The Batsight): don't guess a delay; wait until the receiver says it has settled.
 RXFILE=""
