@@ -67,6 +67,8 @@ class MainActivity : Activity() {
             //      [--ei after 2000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
             //      [--es expect "A|B|C" (texts the other phone sends, to count errors)] [--ei iso 0] [--es room lit] [--es paces 6m] [--es pass W]
             //      [--ez turns true --ez first true|false --ei idle 240]  (both phones send, taking turns)
+            // adb: --es mode field   (the Field test screen, same as the first menu button)
+            "field" -> withCamera { showField() }
             // adb: --es mode aim-send [--ei rate 15] [--ei secs 600]   (blink the aiming pattern; the other phone runs aim-recv and beeps)
             "aim-send" -> showAimSend(intent.getIntExtra("rate", 15), intent.getIntExtra("secs", 600))
             // adb: --es mode aim-recv [--ei rate 15]   (beeps louder/faster the better it sees the aiming pattern)
@@ -150,6 +152,7 @@ class MainActivity : Activity() {
         onMenu = true
         scrollPage {
             text("Light Lab", 28f, bold = true)
+            button("FIELD TEST: talk by light (use this one)") { onMenu = false; withCamera { showField() } }
             text("Results are saved in Download/LightLab (open Files by Google).", 14f, color = Color.LTGRAY)
             button("1. Phone facts (automatic, about 1 minute)") { onMenu = false; withCamera { showFacts() } }
             button("2. Send with the flashlight") { onMenu = false; showTorch() }
@@ -1117,6 +1120,109 @@ class MainActivity : Activity() {
         tv.post(tick)
     }
 
+    /**
+     * Field test (Oct 14, for the founder alone with both phones, no computer): both phones run this screen.
+     * Always listening (live zone map, zones that carried the last message framed, signal), quick phrases and
+     * typing, Find (blink 30 s; the other phone beeps when it sees it). Replies, resends, speed steps, short
+     * openings, fine squares and the glare setting all work by themselves. Night colors: red on black.
+     */
+    private fun showField() {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val RED = Color.rgb(255, 70, 50); val DIM = Color.rgb(150, 40, 30); val SOFT = Color.rgb(200, 90, 70)
+        window.attributes = window.attributes.apply { screenBrightness = 0.35f }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(dp(8), dp(6), dp(8), dp(6)) }
+        fun tv(size: Float, color: Int, bold: Boolean = false) = TextView(this).apply { textSize = size; setTextColor(color); if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD) }
+        val me = BrightFormat.KNOWN_PHONES[android.os.Build.MODEL] ?: android.os.Build.MODEL
+        root.addView(tv(18f, RED, true).apply { text = "LightComm field · $me" })
+        val state = tv(16f, RED, true).apply { text = "Starting..." }; root.addView(state)
+        val camBox = android.widget.FrameLayout(this)
+        root.addView(camBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.9f))
+        val texture = TextureView(this); val map = BlockView(this).apply { red = true }
+        camBox.addView(texture, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        camBox.addView(map, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val meter = tv(14f, SOFT).apply { text = "Signal: nothing read yet" }; root.addView(meter)
+        val find = tv(20f, RED, true); root.addView(find)
+        val talkCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sv = ScrollView(this).apply { addView(talkCol) }
+        root.addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        fun addLine(s: String, color: Int, size: Float = 18f): TextView {
+            val v = tv(size, color, true).apply { text = s }
+            talkCol.addView(v); sv.post { sv.fullScroll(View.FOCUS_DOWN) }; return v
+        }
+        fun row() = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }.also { root.addView(it) }
+        fun LinearLayout.btn(label: String, onClick: () -> Unit) = android.widget.Button(context).apply {
+            text = label; textSize = 13f; isAllCaps = false; setTextColor(RED); setBackgroundColor(Color.rgb(30, 6, 4))
+            setOnClickListener { onClick() } }.also { addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(3, 3, 3, 3) }) }
+        val opts = Talk.Opts(emptyList(), 5, true, true, 2.0, 12.0, 4, 2.0, 0.0, 0, emptyList(), "field", "field")
+        val file = LiveFile(this, "field")
+        val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
+        val am = getSystemService(android.media.AudioManager::class.java)
+        try { am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC), 0) } catch (_: Exception) {}
+        val talk = Talk(this, texture, cams[0].first, savedPass(), opts, file) { st -> runOnUiThread { if (!st.startsWith("Read:") && !st.startsWith("Message ")) state.text = st } }
+        val outLines = HashMap<Int, TextView>()
+        var count = 0
+        fun send(t: String) {
+            val txt = t.trim(); if (txt.isEmpty()) return
+            count++
+            outLines[count] = addLine("→ $txt   · waiting", SOFT)
+            talk.enqueue(txt)
+        }
+        var aimCalls = 0
+        talk.watchFind = true
+        talk.events = object : Talk.Events {
+            override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) = runOnUiThread {
+                outLines[k]?.text = "→ $text   · sending${if (attempt > 1) ", try $attempt" else ""} (${mode.perSec}/s)"
+                state.text = "Sending..."
+            }
+            override fun sent(k: Int, text: String, ok: Boolean, tries: Int, seconds: Double) = runOnUiThread {
+                outLines[k]?.apply {
+                    this.text = if (ok) "→ $text   ✓ got it (${"%.0f".format(seconds)} s${if (tries > 1) ", $tries tries" else ""})" else "→ $text   ✗ NOT delivered"
+                    setTextColor(if (ok) RED else DIM)
+                }
+                tone?.startTone(if (ok) android.media.ToneGenerator.TONE_PROP_BEEP2 else android.media.ToneGenerator.TONE_PROP_NACK, 300)
+                state.text = "Listening"
+            }
+            override fun heard(r: BrightDecoder.Result, dup: Boolean) = runOnUiThread {
+                val zones = r.blocks.filter { it < BrightListener.NB * BrightListener.NC }
+                val fine = r.blocks.count { it >= BrightListener.NCH }
+                if (r.ok) map.used = zones.toSet()
+                val bars = when { r.snr >= 20 -> "▮▮▮▮▮"; r.snr >= 12 -> "▮▮▮▮▯"; r.snr >= 7 -> "▮▮▮▯▯"; r.snr >= 4 -> "▮▮▯▯▯"; else -> "▮▯▯▯▯" }
+                meter.text = "Signal $bars · zones ${zones.size} of 96 + $fine fine · ${java.text.SimpleDateFormat("HH:mm", Locale.US).format(java.util.Date())}" +
+                    if (r.snr < 7) " · weak: move closer or change the light" else ""
+                if (r.ok && !dup) { addLine("← ${r.text}", RED, 22f); tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400) }
+                else if (!r.ok) addLine("← (saw a message, could not read it: asked again)", DIM, 14f)
+            }
+            override fun aim(score: Double) {
+                aimCalls++
+                when {
+                    score >= 0.75 -> tone?.startTone(android.media.ToneGenerator.TONE_DTMF_D, 120)
+                    score >= 0.55 && aimCalls % 2 == 0 -> tone?.startTone(android.media.ToneGenerator.TONE_DTMF_1, 250)
+                }
+                runOnUiThread { find.text = when { score >= 0.75 -> "FIND: CLEAR ${(score * 100).toInt()}"; score >= 0.55 -> "FIND: faint ${(score * 100).toInt()}"; else -> "" } }
+            }
+        }
+        val r1 = row(); val r2 = row()
+        listOf("OK", "Wait", "Need help").forEach { p -> r1.btn(p) { send(p) } }
+        listOf("Where are you?", "Come here").forEach { p -> r2.btn(p) { send(p) } }
+        val r3 = row()
+        val input = EditText(this).apply { hint = "Write..."; setTextColor(RED); setHintTextColor(DIM); textSize = 16f; isSingleLine = true }
+        r3.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.2f))
+        r3.btn("Send") { send(input.text.toString()); input.setText("") }
+        val r4 = row()
+        r4.btn("Find (blink 30 s)") { talk.findSec = 30; state.text = "Find: blinking 30 s..."; addLine("· blinking Find for 30 s", DIM, 14f) }
+        r4.btn("Stop") { leave(); showMenu() }
+        setContentView(root)
+        stopCurrent = {
+            talk.stop(); tone?.release(); file.append("\nSTOPPED.\n")
+            window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+        }
+        val ticker = object : Runnable { override fun run() { if (!talk.alive) return; map.show(talk.rx.liveliness(), talk.sensorOrientation); texture.postDelayed(this, 600) } }
+        texture.post(ticker)
+        talk.start()
+    }
+
     private fun showTalk(opts: Talk.Opts) {
         onMenu = false
         val cams = CamSession.backCameras(this)
@@ -1139,6 +1245,10 @@ class MainActivity : Activity() {
     /** Draws the 12 x 8 blocks over the camera view; brighter yellow = light changing there. */
     class BlockView(ctx: android.content.Context) : View(ctx) {
         private var live: FloatArray? = null
+        /** Zones that carried the last message read (drawn with a strong frame); red = night colors. */
+        var used: Set<Int> = emptySet()
+        var red = false
+        private val usedPaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 5f; color = Color.rgb(255, 60, 40) }
         private var orient = 90
         private val cell = Paint()
         private val grid = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 1f; color = Color.argb(60, 255, 255, 255) }
@@ -1159,8 +1269,9 @@ class MainActivity : Activity() {
                 val l = minOf(x0, x1) * width; val r = maxOf(x0, x1) * width
                 val t = minOf(y0, y1) * height; val btm = maxOf(y0, y1) * height
                 val a = (v[b * nc + k] / mx * 150).toInt()
-                if (a > 10) { cell.color = Color.argb(a, 255, 220, 0); c.drawRect(l, t, r, btm, cell) }
+                if (a > 10) { cell.color = if (red) Color.argb(a, 200, 40, 20) else Color.argb(a, 255, 220, 0); c.drawRect(l, t, r, btm, cell) }
                 c.drawRect(l, t, r, btm, grid)
+                if (b * nc + k in used) c.drawRect(l + 3, t + 3, r - 3, btm - 3, usedPaint)
             }
         }
     }

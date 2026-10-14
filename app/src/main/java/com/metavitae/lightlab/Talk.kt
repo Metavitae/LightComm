@@ -46,6 +46,27 @@ class Talk(
         val turns: Boolean = false, val first: Boolean = true, val idle: Double = 45.0,
     )
 
+    /** What the Field screen shows (all optional). Called on the talk or scanner thread. */
+    interface Events {
+        fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {}
+        fun sent(k: Int, text: String, ok: Boolean, tries: Int, seconds: Double) {}
+        fun heard(r: BrightDecoder.Result, dup: Boolean) {}
+        /** How well the other phone's Find pattern is seen now (0..1), about every 0.7 s while listening. */
+        fun aim(score: Double) {}
+    }
+    @Volatile var events: Events? = null
+    /** Also look for the other phone's Find pattern while listening (Field screen). */
+    @Volatile var watchFind = false
+    /** Blink the Find pattern for this many seconds as soon as possible (0 = no). */
+    @Volatile var findSec = 0
+
+    /** Messages to send: the start list, plus any added later (Field screen). */
+    private val box: MutableList<String> = java.util.Collections.synchronizedList(ArrayList(o.outbox))
+    fun enqueue(text: String) { box.add(text) }
+    fun waiting(): Int = box.size - next
+    /** How the camera sensor is turned (for drawing the zone map over the preview). */
+    val sensorOrientation: Int get() = cam?.sensorOrientation ?: 90
+
     private var exp = 0.0325
     val rx = BrightListener(act, pass, exp)
     private val sender = BrightSender(act)
@@ -129,32 +150,46 @@ class Talk(
         show("Starting camera...")
         openCam()
         log("# ready: listening, background ${f1(rx.background())}, brightest spots ${f1(rx.brightTop())}, ISO $iso, picture ${f1(exp * 1000)} ms\n")
+        val findWave = BrightFormat.aimWave(15, 20.0)
+        val findPeriod = BrightFormat.SHORT_SYNC.size / 15.0
         scanner.scheduleWithFixedDelay({
             if (rx.readyAt > 0) {
                 val lines = try { rx.scan() } catch (e: Exception) { listOf("# scan problem: ${e.message}\n") }
                 for (l in lines) log(l)
+                if (watchFind && !rx.hearing) {
+                    val sc = try { rx.aimScore(3.0, findWave, findPeriod).first } catch (_: Exception) { 0.0 }
+                    events?.aim(sc)
+                }
             }
         }, 700, 700, TimeUnit.MILLISECONDS)
         show("Listening...")
         val startAt = now() + o.startDelay
         var quietSince = now()
         val rounds = ArrayList<Double>(); var delivered = 0; var tries = 0
-        if (o.outbox.isNotEmpty()) log("SEND_HEAD msg,try,opening,mode,levels,per_sec,nonce,send_s,listening_after_s,outcome,reply_seen_after_s,round_s,text\n")
+        log("SEND_HEAD msg,try,opening,mode,levels,per_sec,nonce,send_s,listening_after_s,outcome,reply_seen_after_s,round_s,text\n")
         while (alive) {
             val r = rx.heard.poll(200, TimeUnit.MILLISECONDS)
             if (r != null) { answer(r); quietSince = now(); if (!sendNow) continue }
-            if (o.turns && o.first && !myTurn && next < o.outbox.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
+            if (findSec > 0 && !rx.hearing) {
+                val sec = findSec; findSec = 0
+                log("# find: blinking the find pattern for $sec s\n")
+                closeCam(); sender.aim(15, sec.toDouble()); openCam()
+                quietSince = now(); continue
+            }
+            if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
-            if (next < o.outbox.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
+            if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
-                val (ok, n, round) = deliver(o.outbox[next], next + 1)
+                val text = box[next]
+                val (ok, n, round) = deliver(text, next + 1)
+                events?.sent(next + 1, text, ok, n, round)
                 if (ok) myTurn = false
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
-                if (next == o.outbox.size) {
+                if (next == box.size) {
                     log(String.format(Locale.US, "# DONE: %d of %d delivered, %d tries, round (send to got-it seen) mean %.1f s, min %.1f, max %.1f\n",
-                        delivered, o.outbox.size, tries, if (rounds.isEmpty()) 0.0 else rounds.average(), rounds.minOrNull() ?: 0.0, rounds.maxOrNull() ?: 0.0))
-                    show("Done: $delivered of ${o.outbox.size} delivered. Still listening.")
+                        delivered, box.size, tries, if (rounds.isEmpty()) 0.0 else rounds.average(), rounds.minOrNull() ?: 0.0, rounds.maxOrNull() ?: 0.0))
+                    show("Done: $delivered of ${box.size} delivered. Still listening.")
                 }
             }
         }
@@ -169,6 +204,7 @@ class Talk(
                         else rx.inLink?.let { it.copy(lastSeq = max(it.lastSeq, r.seq)) }
             if (!dup) show("Read: \"${r.text}\"")
         }
+        events?.heard(r, dup)
         val ended = now() - (rx.newest() - r.endT)     // when the message ended, on this clock
         val noticed = now() - ended
         closeCam()
@@ -180,7 +216,7 @@ class Talk(
             if (r.ok) "GOT IT" else "COULD NOT READ", r.nonce, if (r.seq > 0) " (short opening #${r.seq})" else "", if (dup) " (again: seen before)" else "",
             noticed, startedAfter, sec, lateUs, fail ?: "ok"))
         // Our turn now: send straight away (the other phone is listening), no need to open the camera first.
-        if (o.turns && r.ok && !dup && next < o.outbox.size) { myTurn = true; sendNow = true; return }
+        if (o.turns && r.ok && !dup && next < box.size) { myTurn = true; sendNow = true; return }
         openCam()
     }
 
@@ -194,6 +230,7 @@ class Talk(
             if (!alive) break
             val mode = BrightFormat.MODES[if (o.auto && li >= 0) ladder[li] else o.startMode]
             show("Message $k, try $attempt: sending in ${mode.name}${if (useShort) ", short opening" else ""}...")
+            events?.sending(k, text, attempt, mode, useShort)
             closeCam()
             rx.replies.clear()
             val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce) { }
