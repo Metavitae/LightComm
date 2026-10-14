@@ -273,7 +273,9 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     /** A send has started and is still coming (don't start sending over it). */
     @Volatile var hearing = false
     /** Send whose header was read but whose end is still coming: (start, end); skip re-reading it until then. */
-    private var pending: Pair<Double, Double>? = null
+    @Volatile private var pending: Pair<Double, Double>? = null
+    /** How far the send being heard has come, 0..1 (-1 = none, or its header not read yet). */
+    fun progress(): Double { val p = pending ?: return -1.0; val now = newest(); return ((now - p.first) / (p.second - p.first)).coerceIn(0.0, 1.0) }
     val tally = LinkedHashMap<String, IntArray>()   // "mode|from" -> (right, sent)
     var lastLine = ""
 

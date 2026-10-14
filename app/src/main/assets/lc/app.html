@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LightComm</title>
+<!--
+  LightComm, first approximation (Oct 14). Screens follow Chat's "Night Watch" canvas (Chats, Chat, Hold,
+  Receive/Listen, Look). Talks to the light engine through window.LC (LightCommActivity.Bridge).
+-->
+<style>
+@font-face{font-family:"Jost";font-weight:400;src:url(jost-400.ttf)}
+@font-face{font-family:"Jost";font-weight:500;src:url(jost-500.ttf)}
+@font-face{font-family:"Jost";font-weight:800;src:url(jost-800.ttf)}
+@font-face{font-family:"JetBrains Mono";font-weight:400;src:url(jetbrains-400.ttf)}
+@font-face{font-family:"JetBrains Mono";font-weight:500;src:url(jetbrains-500.ttf)}
+:root{--bg:#070204;--panel:#12060a;--panel2:#1b0a0f;--line:#4a1b1e;--dim:#ee6a55;--ink:#ff5a45;--hi:#ff9477;--on:#070204}
+:root[data-mode="green"]{--bg:#020805;--panel:#06130c;--panel2:#0a1e13;--line:#1a4a30;--dim:#35b36f;--ink:#4dff9a;--hi:#a6ffcf;--on:#020805}
+:root[data-mode="normal"]{--bg:#0b0b0c;--panel:#161617;--panel2:#202022;--line:#3d3d41;--dim:#d2d2d6;--ink:#f1f1f3;--hi:#ffffff;--on:#0b0b0c}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:"Jost",system-ui,sans-serif;overflow:hidden}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+.mono{font-family:"JetBrains Mono",monospace}
+.view{position:fixed;inset:0;display:none;flex-direction:column;background:var(--bg)}
+.view.on{display:flex}
+.cap{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.1em;color:var(--dim)}
+.pill{height:44px;padding:0 16px;border:1px solid var(--line);background:var(--panel);border-radius:999px;font-weight:500;font-size:16px;white-space:nowrap}
+.bigbtn{flex:1;height:56px;border-radius:16px;font-weight:800;font-size:17px;display:flex;align-items:center;justify-content:center;gap:10px}
+.outline{border:1px solid var(--ink);background:transparent;color:var(--ink)}
+.solid{border:0;background:var(--ink);color:var(--on)}
+.icon{width:48px;height:48px;border:0;background:transparent;display:flex;align-items:center;justify-content:center;flex:none}
+.card{display:flex;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;min-height:84px;width:100%;text-align:left}
+.top{padding:18px 8px 12px 6px;display:flex;align-items:center;gap:2px;border-bottom:1px solid var(--line)}
+#msgs{flex:1;overflow-y:auto;padding:12px 16px 4px;display:flex;flex-direction:column;gap:14px}
+.in,.out{max-width:82%}
+.in{align-self:flex-start}.out{align-self:flex-end}
+.bub{padding:12px 14px;font-size:18px;line-height:1.3;word-wrap:break-word}
+.in .bub{background:var(--panel);border:1px solid var(--line);border-radius:6px 18px 18px 18px}
+.out .bub{background:var(--ink);color:var(--on);border-radius:18px 6px 18px 18px;font-weight:500}
+.out.pending .bub{background:transparent;color:var(--ink);border:1px dashed var(--ink)}
+.out.failed .bub{background:transparent;color:var(--dim);border:1px solid var(--line)}
+.meta{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);margin:4px 4px 0;letter-spacing:.04em}
+.out .meta{text-align:right}
+.who{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);margin:0 4px 4px}
+#lightnet{margin:10px 16px 0;display:flex;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;min-height:52px}
+#lnText{font-size:16px;line-height:1.25}
+#hold{margin:10px 16px 0;background:var(--panel);border:1px solid var(--hi);border-radius:16px;padding:12px 14px;display:none}
+.bar{margin-top:10px;height:5px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--hi);width:0}
+#inputRow{padding:10px 12px 18px;display:flex;align-items:center;gap:8px}
+#box{flex:1;min-width:0;height:52px;border:1px solid var(--line);background:var(--panel);border-radius:26px;padding:0 18px;font-size:17px;outline:none}
+#box::placeholder{color:var(--dim)}
+.dimmed{opacity:.45}
+#sendBtn{width:56px;height:56px;border-radius:50%;border:0;background:var(--ink);color:var(--on);display:flex;align-items:center;justify-content:center;flex:none}
+#zones{display:grid;gap:3px;padding:6px}
+.z{border-radius:3px;background:var(--line);opacity:.12;aspect-ratio:1.25}
+.z.used{outline:2px solid var(--hi);outline-offset:-2px}
+.row{display:flex;gap:12px}
+.stat{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.sig{display:flex;gap:4px;align-items:flex-end;margin-top:8px;height:28px}
+.sig span{width:10px;border-radius:2px;background:var(--panel2);border:1px solid var(--line)}
+.sig span.f{background:var(--ink);border-color:var(--ink)}
+input[type=range]{width:100%;accent-color:var(--ink)}
+.field{width:100%;height:52px;border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:0 16px;font-size:17px;outline:none;margin-top:6px}
+.seg{display:flex;gap:8px}.seg button{flex:1;height:48px;border-radius:12px;border:1px solid var(--line);background:var(--panel);font-weight:500}
+.seg button.sel{border-color:var(--ink);background:var(--ink);color:var(--on);font-weight:800}
+</style>
+</head>
+<body>
+
+<!-- ============ CHATS ============ -->
+<section class="view" id="vChats">
+  <div style="padding:26px 20px 0;display:flex;align-items:center;justify-content:space-between">
+    <div style="font-weight:800;font-size:26px;letter-spacing:.02em"><span style="color:var(--hi)">Light</span>Comm</div>
+    <button class="pill mono" style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:8px" onclick="show('vSettings')" aria-label="Look and settings">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5Z"/></svg>
+      <span id="nightLbl">NIGHT</span>
+    </button>
+  </div>
+  <div class="cap" style="padding:14px 20px 0;display:flex;align-items:center;gap:10px">
+    <span style="width:8px;height:8px;border-radius:50%;background:var(--ink);box-shadow:0 0 8px var(--ink)"></span>
+    <span>THIS STATION · <span id="me"></span></span><span style="margin-left:auto">NO NETWORK NEEDED</span>
+  </div>
+  <div class="cap" style="padding:30px 20px 10px;display:flex;align-items:center;gap:12px;letter-spacing:.14em">
+    <span id="chatsCount">CHATS</span><span style="flex:1;height:1px;background:var(--line)"></span>
+  </div>
+  <div id="chatList" style="padding:0 20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto"></div>
+  <div style="margin:18px 20px 0;border:1px dashed var(--line);border-radius:16px;padding:16px">
+    <div style="font-weight:800;font-size:17px">Each chat is its own circle.</div>
+    <div style="font-size:15px;line-height:1.35;color:var(--dim);margin-top:6px">Only people with that chat's key words can send or read it.</div>
+  </div>
+  <div style="flex:1"></div>
+  <div style="padding:6px 20px 24px;display:flex;gap:12px">
+    <button class="bigbtn outline" onclick="newChat(true)">Join</button>
+    <button class="bigbtn solid" onclick="newChat(false)">New chat</button>
+  </div>
+</section>
+
+<!-- ============ NEW / JOIN ============ -->
+<section class="view" id="vNew">
+  <div class="top"><button class="icon" onclick="show('vChats')" aria-label="Back"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
+    <div style="font-weight:800;font-size:19px;padding-left:6px" id="newTitle">New chat</div></div>
+  <div style="padding:20px;display:flex;flex-direction:column;gap:18px">
+    <label class="cap">CHAT NAME<input class="field" id="newName" placeholder="Ridge Patrol"></label>
+    <label class="cap">KEY WORDS (THE SAME ON EVERY PHONE)<input class="field" id="newKey" placeholder="three words" autocapitalize="characters"></label>
+    <div style="font-size:15px;color:var(--dim);line-height:1.35" id="newHint">Tell the others these words in person. Invitations by light come later.</div>
+    <button class="bigbtn solid" style="flex:none" onclick="saveChat()">Save</button>
+  </div>
+</section>
+
+<!-- ============ CHAT ============ -->
+<section class="view" id="vChat">
+  <div class="top">
+    <button class="icon" style="width:44px" onclick="leaveChat()" aria-label="Back to chats"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
+    <svg width="40" height="40" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="16" stroke="var(--line)" stroke-width="1.4"/><circle cx="24" cy="8" r="3.2" fill="var(--ink)"/><circle cx="24" cy="40" r="3.2" fill="var(--dim)"/><circle cx="24" cy="24" r="2" fill="var(--hi)"/></svg>
+    <div style="flex:1;min-width:0;padding-left:10px">
+      <div style="font-weight:800;font-size:19px" id="chatName"></div>
+      <div class="mono" style="display:flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.08em;color:var(--hi)"><span id="dot" style="width:6px;height:6px;border-radius:50%;background:var(--hi)"></span><span id="chatState">STARTING</span></div>
+    </div>
+    <button class="icon" onclick="show('vSettings')" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="11" cy="11" r="3"/><path d="M11 2v3M11 17v3M2 11h3M17 11h3M4.6 4.6l2.1 2.1M15.3 15.3l2.1 2.1M4.6 17.4l2.1-2.1M15.3 6.7l2.1-2.1"/></svg></button>
+  </div>
+  <div id="lightnet">
+    <!-- Lightnet character: placeholder mark until Chat designs the character -->
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" aria-hidden="true" style="flex:none"><circle cx="17" cy="17" r="15" stroke="var(--line)" stroke-width="1.4"/><circle id="lnEye" cx="17" cy="17" r="5" fill="var(--hi)"/></svg>
+    <div id="lnText">Waking the camera…</div>
+  </div>
+  <div id="msgs"></div>
+  <div id="hold">
+    <div class="mono" style="display:flex;justify-content:space-between;font-size:11px;letter-spacing:.1em;color:var(--hi)"><span>HOLD · SOMEONE IS SENDING</span><span id="holdPct"></span></div>
+    <div class="bar"><span id="holdBar"></span></div>
+  </div>
+  <div style="padding:10px 16px 0;display:flex;gap:8px;overflow-x:auto">
+    <button class="pill" onclick="send('OK')">OK</button>
+    <button class="pill" onclick="send('Need help')" style="border-color:var(--ink)">Need help</button>
+    <button class="pill" onclick="send('Wait')">Wait</button>
+    <button class="pill" onclick="send('Where are you?')">Where are you?</button>
+    <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
+  </div>
+  <div id="inputRow">
+    <input id="box" placeholder="Write to the circle" maxlength="80" enterkeyhint="send" onkeydown="if(event.key==='Enter'){sendBox()}">
+    <button id="sendBtn" onclick="sendBox()" aria-label="Send as light"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="13" cy="13" r="4.5" fill="currentColor"/><path d="M13 2v3.5M13 20.5V24M2 13h3.5M20.5 13H24M5.2 5.2l2.5 2.5M18.3 18.3l2.5 2.5M5.2 20.8l2.5-2.5M18.3 7.7l2.5-2.5"/></svg></button>
+  </div>
+</section>
+
+<!-- ============ LISTEN (receive view, zone map) ============ -->
+<section class="view" id="vListen">
+  <div class="cap" style="padding:26px 20px 0;display:flex;justify-content:space-between"><span id="lsTitle">LISTENING</span><span id="lsLock" style="color:var(--hi)"></span></div>
+  <div style="margin:16px 20px 0;border:1px solid var(--line);border-radius:20px;overflow:hidden">
+    <div id="zones"></div>
+    <div class="cap" style="height:34px;display:flex;align-items:center;justify-content:center;border-top:1px solid var(--line);font-size:11px">ZONES THAT CARRY OUR PATTERN</div>
+  </div>
+  <div class="row" style="margin:16px 20px 0">
+    <div class="stat"><div class="cap" style="font-size:11px">SIGNAL</div><div class="sig" id="sig"></div></div>
+    <div class="stat"><div class="cap" style="font-size:11px">ZONES USED</div><div style="display:flex;align-items:baseline;gap:6px;margin-top:8px;height:28px"><span style="font-weight:800;font-size:20px" id="zUsed">-</span><span class="mono" style="font-size:13px;color:var(--dim)">OF 96</span></div></div>
+  </div>
+  <div style="margin:16px 20px 0;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px">
+    <div class="mono" style="display:flex;justify-content:space-between;font-size:11px;letter-spacing:.1em;color:var(--dim)"><span id="lsWho">WAITING FOR LIGHT</span><span id="lsPct" style="color:var(--hi)"></span></div>
+    <div style="margin-top:8px;font-size:17px;line-height:1.3;color:var(--dim)" id="lsHint">You do not need to see them. Any wall, floor or ceiling that carries their light counts.</div>
+    <div class="bar"><span id="lsBar"></span></div>
+  </div>
+  <div style="flex:1"></div>
+  <div style="padding:0 20px 24px;display:flex;gap:12px">
+    <button class="bigbtn outline" onclick="doFind()">Find (blink 30 s)</button>
+    <button class="bigbtn solid" onclick="show('vChat')">Back to chat</button>
+  </div>
+</section>
+
+<!-- ============ SETTINGS (look, night level, test switches) ============ -->
+<section class="view" id="vSettings">
+  <div class="top"><button class="icon" onclick="goBack()" aria-label="Back"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
+    <div style="font-weight:800;font-size:19px;padding-left:6px">Settings</div></div>
+  <div style="padding:20px;display:flex;flex-direction:column;gap:22px;overflow-y:auto">
+    <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
+      <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
+    <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
+    <div><div class="cap">TEST · AUTO-ANSWER</div>
+      <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "COPY: …".</div>
+      <div class="seg"><button id="autoOff" onclick="setAuto(false)">Off</button><button id="autoOn" onclick="setAuto(true)">On</button></div></div>
+    <div><div class="cap">THIS CHAT'S KEY WORDS</div><div style="font-size:18px;margin-top:6px" id="keyShow">-</div></div>
+    <div class="cap" style="line-height:1.6">THIS STATION · <span id="me2"></span><br>TEST VERSION · NOT FOR SAFETY USE</div>
+  </div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, poll:()=>'{"events":[],"phase":"idle"}' };
+const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
+                set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
+let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
+let cur = null, msgs = [], session = 0, auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
+const me = LC.phone(); $('me').textContent = me.toUpperCase(); $('me2').textContent = me.toUpperCase();
+
+function show(id){ const prev = document.querySelector('.view.on'); if (prev && prev.id !== id) history.push(prev.id);
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === id)); if (id === 'vChats') drawChats(); if (id === 'vSettings') drawSettings(); }
+function goBack(){ const v = document.querySelector('.view.on').id;
+  if (v === 'vChats') return false;
+  if (v === 'vChat') { leaveChat(); return true }
+  const p = history.pop(); show(p && p !== v ? p : (cur ? 'vChat' : 'vChats')); history.pop(); return true }
+window.goBack = goBack;
+
+// ---------- look ----------
+function setMode(m){ document.documentElement.dataset.mode = m; store.set('lc.mode', m); drawSettings() }
+function setNight(v){ store.set('lc.night', +v); LC.brightness(v / 100); $('nightPct').textContent = v + '%'; $('nightLbl').textContent = 'NIGHT ' + v + '%' }
+function setAuto(on){ auto = on; store.set('lc.auto', on); LC.log('auto-answer ' + (on ? 'on' : 'off')); drawSettings() }
+function drawSettings(){ const m = store.get('lc.mode', 'red');
+  document.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('sel', b.dataset.m === m));
+  $('autoOn').classList.toggle('sel', auto); $('autoOff').classList.toggle('sel', !auto);
+  $('night').value = store.get('lc.night', 40); $('nightPct').textContent = $('night').value + '%';
+  $('keyShow').textContent = cur ? cur.key : 'open a chat first' }
+setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.maxVolume();
+
+// ---------- chats ----------
+function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;
+  chats.forEach(c => { const last = store.get('lc.msgs.' + c.id, []).slice(-1)[0];
+    const b = document.createElement('button'); b.className = 'card'; b.onclick = () => openChat(c);
+    b.innerHTML = '<svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="16" stroke="var(--line)" stroke-width="1.4"/><circle cx="24" cy="8" r="3.2" fill="var(--ink)"/><circle cx="24" cy="40" r="3.2" fill="var(--dim)"/><circle cx="24" cy="24" r="2" fill="var(--hi)"/></svg>' +
+      '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-weight:800;font-size:19px"></span><span class="mono" style="font-size:12px;color:var(--dim)"></span></div>' +
+      '<div class="mono" style="font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div></div>';
+    const s = b.querySelectorAll('span'); s[0].textContent = c.name; s[1].textContent = last ? last.time : '';
+    b.querySelectorAll('div')[2].textContent = last ? ((last.dir === 'in' ? last.from + ': ' : 'You: ') + last.text) : 'No messages yet';
+    l.appendChild(b) }) }
+let joining = false;
+function newChat(join){ joining = join; $('newTitle').textContent = join ? 'Join a chat' : 'New chat'; $('newName').value = ''; $('newKey').value = '';
+  $('newHint').textContent = join ? 'Type the key words the others gave you, exactly.' : 'Tell the others these words in person. Invitations by light come later.'; show('vNew') }
+function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKey').value.trim().toUpperCase();
+  if (k.length < 3) { $('newHint').textContent = 'Key words are needed (at least 3 letters).'; return }
+  chats.push({ id:'c' + Date.now(), name:n, key:k }); store.set('lc.chats', chats); show('vChats') }
+
+// ---------- chat ----------
+function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
+function openChat(c){ cur = c; session = 0; msgs = store.get('lc.msgs.' + c.id, []);
+  msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
+  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); show('vChat') }
+function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
+function save(){ if (cur) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
+function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
+  msgs.forEach((m, i) => { const d = document.createElement('div'); d.className = m.dir + (m.state ? ' ' + m.state : '');
+    if (m.dir === 'in') { const w = document.createElement('div'); w.className = 'who'; w.textContent = (m.from || '').toUpperCase() + ' · ' + m.time; d.appendChild(w) }
+    const b = document.createElement('div'); b.className = 'bub'; b.textContent = m.text; d.appendChild(b);
+    const t = document.createElement('div'); t.className = 'meta'; t.textContent = m.meta || ''; d.appendChild(t);
+    if (m.dir === 'out' && m.state === 'failed') d.onclick = () => { m.state = 'pending'; enqueue(m) };
+    box.appendChild(d) });
+  box.scrollTop = box.scrollHeight; save() }
+function enqueue(m){ session++; m.k = session; m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…'; LC.send(m.text); drawMsgs() }
+function send(text){ if (!cur || !text) return; const m = { dir:'out', text, time:now() }; msgs.push(m); enqueue(m) }
+function sendBox(){ const v = $('box').value.trim(); if (v) { send(v); $('box').value = '' } }
+function bySession(k){ for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'out' && msgs[i].k === k && msgs[i].state === 'pending') return msgs[i]; return null }
+function bars(snr){ return snr >= 20 ? 5 : snr >= 12 ? 4 : snr >= 7 ? 3 : snr >= 4 ? 2 : 1 }
+function line(t, hold){ $('lnText').textContent = t; lastNote = { t, until: Date.now() + (hold || 0) } }
+
+// ---------- listen view ----------
+const grid = [];
+(function(){ const z = $('zones'); z.style.gridTemplateColumns = 'repeat(12,1fr)';
+  for (let i = 0; i < 96; i++) { const c = document.createElement('div'); c.className = 'z'; z.appendChild(c); grid.push(c) } })();
+// Receiver blocks are 12 row bands x 8 column blocks in the camera's own (landscape) layout; drawn the way the phone is held.
+function cellFor(i, orient){ const b = Math.floor(i / 8), k = i % 8; let r, c;
+  if (orient === 270) { r = 7 - k; c = b } else if (orient === 90) { r = k; c = 11 - b } else { r = k; c = b }
+  return r * 12 + c }
+function drawSig(n){ const s = $('sig'); s.innerHTML = ''; for (let i = 0; i < 5; i++) { const e = document.createElement('span'); e.style.height = (8 + i * 5) + 'px'; if (i < n) e.className = 'f'; s.appendChild(e) }
+  const t = document.createElement('span'); t.style.cssText = 'width:auto;border:0;background:none;margin-left:8px;font-weight:800;font-size:20px'; t.textContent = n ? n + '/5' : '-'; s.appendChild(t) }
+drawSig(0);
+function doFind(){ LC.find(); line('Blinking Find for 30 s. The other phone beeps when it sees it.', 30000) }
+
+// ---------- live loop ----------
+function tick(){
+  let st; try { st = JSON.parse(LC.poll()) } catch (e) { return }
+  for (const e of st.events) {
+    if (e.type === 'sending') { const m = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
+      line(e.attempt > 1 ? 'No answer yet. Sending again' + (e.perSec < 30 ? ', slower.' : '.') : 'Sending as light. Keep the phone still.') }
+    else if (e.type === 'sent') { const m = bySession(e.k); if (m) { m.state = e.ok ? '' : 'failed';
+        m.meta = e.ok ? 'SENT AS LIGHT · ' + Math.round(e.seconds) + ' S · GOT IT' + (e.tries > 1 ? ' · ' + e.tries + ' TRIES' : '') : 'NOT DELIVERED · TAP TO SEND AGAIN'; drawMsgs() }
+      line(e.ok ? 'Got it. Delivered.' : 'Not delivered. Move closer or change the light, then tap the message.', 6000) }
+    else if (e.type === 'heard') {
+      lastHeard = e; drawSig(bars(e.snr)); $('zUsed').textContent = e.zones + (e.fine ? ' + ' + e.fine : '');
+      grid.forEach(c => c.classList.remove('used')); (e.used || []).forEach(i => grid[cellFor(i, st.orient || 90)].classList.add('used'));
+      if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : '') }); drawMsgs();
+        line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
+        if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text.slice(0, 40)) }
+      else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
+    else if (e.type === 'problem') line(e.text, 10000)
+  }
+  const sending = st.phase === 'sending', hearing = !!st.hearing;
+  $('chatState').textContent = st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING · ' + me.toUpperCase() : 'IDLE';
+  $('hold').style.display = hearing && !sending ? 'block' : 'none';
+  const pct = st.progress >= 0 ? Math.round(st.progress * 100) : -1;
+  $('holdPct').textContent = pct >= 0 ? pct + '%' : ''; $('holdBar').style.width = (pct >= 0 ? pct : 15) + '%';
+  $('box').classList.toggle('dimmed', hearing && !sending); $('sendBtn').classList.toggle('dimmed', hearing && !sending);
+  $('lsTitle').textContent = (cur ? cur.name.toUpperCase() + ' · ' : '') + (sending ? 'SENDING' : 'LISTENING');
+  $('lsWho').textContent = hearing ? 'SOMEONE IS SENDING' : 'WAITING FOR LIGHT'; $('lsPct').textContent = pct >= 0 ? pct + '%' : '';
+  $('lsBar').style.width = hearing ? (pct >= 0 ? pct : 10) + '%' : '0';
+  const f = st.find || 0; $('lsLock').textContent = f >= 0.75 ? 'FIND · CLEAR' : f >= 0.55 ? 'FIND · FAINT' : '';
+  if (st.live) { const mx = Math.max(1e-3, ...st.live); st.live.forEach((v, i) => { const c = grid[cellFor(i, st.orient || 90)]; c.style.background = 'var(--ink)'; c.style.opacity = (0.06 + 0.8 * v / mx).toFixed(2) }) }
+  // Lightnet line: what is going on right now, unless a fresh note is still showing.
+  if (!lastNote || Date.now() > lastNote.until) {
+    if (st.phase === 'starting') $('lnText').textContent = 'Waking the camera…';
+    else if (sending) $('lnText').textContent = 'Sending as light. Keep the phone still.';
+    else if (hearing) $('lnText').textContent = 'Someone is sending. Hold.';
+    else if (f >= 0.75) $('lnText').textContent = 'I see their Find light clearly. Leave this phone here.';
+    else if (f >= 0.55) $('lnText').textContent = 'I see their Find light, faintly. Try moving a little.';
+    else if (st.waiting > 0) $('lnText').textContent = 'Waiting for a clear line to send.';
+    else if (st.phase === 'listening') $('lnText').textContent = 'Listening. Their light off a wall, floor or ceiling counts.';
+  }
+  $('lnEye').setAttribute('r', sending ? 7 : hearing ? 6 : 5);
+}
+setInterval(tick, 400);
+show('vChats');
+</script>
+</body>
+</html>

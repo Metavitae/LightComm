@@ -18,5 +18,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- LightComm: first approximation of the real app (Night Watch screens), its own launcher icon. -->
+        <activity
+            android:name=".LightCommActivity"
+            android:label="LightComm"
+            android:exported="true"
+            android:taskAffinity="com.metavitae.lightcomm"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

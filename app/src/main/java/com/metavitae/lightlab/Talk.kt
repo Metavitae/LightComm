@@ -31,7 +31,7 @@ import kotlin.math.max
  * after each failed try and up after 2 messages in a row got through on the first try.
  */
 class Talk(
-    private val act: Activity, private val tv: TextureView, private val camId: String, private val pass: String,
+    private val act: Activity, private val tv: TextureView?, private val camId: String, private val pass: String,
     private val o: Opts, private val file: LiveFile, private val show: (String) -> Unit,
 ) {
     class Opts(
@@ -146,7 +146,7 @@ class Talk(
         log(Results.header("Talking in turns") + "Passphrase rhythm: ${MessageFormat.beaconHz(pass)} /s (passphrase itself not saved)\n" +
             "To send: ${o.outbox.size} messages; start speed: ${BrightFormat.MODES[o.startMode].name}; auto-speed ${if (o.auto && li >= 0) "on" else "off"}; " +
             "short openings ${if (o.short) "on" else "off"}; reply ${f1(o.replyAfter)} s after a message ends; wait for reply ${f1(o.waitReply)} s; up to ${o.tries} tries\n\n")
-        while (!tv.isAvailable && alive) Thread.sleep(50)
+        while (tv != null && !tv.isAvailable && alive) Thread.sleep(50)
         show("Starting camera...")
         openCam()
         log("# ready: listening, background ${f1(rx.background())}, brightest spots ${f1(rx.brightTop())}, ISO $iso, picture ${f1(exp * 1000)} ms\n")

@@ -1,0 +1,261 @@
+<title>Kithe Presents LightComm</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- In the app (Oct 14): offline fonts and three.js from the app itself; plays once, tap to skip, then the app. -->
+<style>
+@font-face{font-family:"Jost";font-weight:400;src:url(jost-400.ttf)}
+@font-face{font-family:"Jost";font-weight:500;src:url(jost-500.ttf)}
+@font-face{font-family:"Jost";font-weight:800;src:url(jost-800.ttf)}
+</style>
+<style>
+  :root { --bg:#ffffff; --ink:#eef2f8; --gold:#ffe9a8; --silver:#aeb8c8; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#05070c; color:#eef2f8; overflow:hidden;
+    font-family:"Jost","Futura","Century Gothic",system-ui,sans-serif; -webkit-tap-highlight-color:transparent; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; width:100%; height:100%; }
+  .txt { position:fixed; left:0; right:0; text-align:center; pointer-events:none; opacity:0; padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); }
+  #presents { top:67%; color:#1b5c7d; letter-spacing:.42em; font-size:clamp(11px,2.2vmin,16px); font-weight:600; }
+  #word { top:75%; font-size:clamp(34px,10vmin,88px); font-weight:800; letter-spacing:.05em; color:var(--ink); }
+  #word b { font-weight:800; color:var(--gold); }
+  #word i { font-style:normal; font-weight:800; color:var(--silver); }
+  #tag { top:calc(75% + clamp(40px,11vmin,96px)); color:#8e9ab0; letter-spacing:.3em; font-size:clamp(10px,2vmin,15px); padding-left:.3em; text-transform:uppercase; }
+  #hint { position:fixed; bottom:14px; left:0; right:0; text-align:center; font-size:12px; color:#8e9ab0; opacity:.0; transition:opacity .6s; pointer-events:none; }
+  #hint.on { opacity:.7; }
+</style>
+<div id="stage"></div>
+<div class="txt" id="presents">KITHE PRESENTS</div>
+<div class="txt" id="word"><b>Light</b><i>Comm</i></div>
+<div class="txt" id="tag">Messages made of light</div>
+<div id="hint">Tap to skip</div>
+<script src="three.min.js"></script>
+<script>
+(function(){
+const LOOP = 18;            // seconds per full show
+const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const stageEl = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
+stageEl.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+const WHITE = new THREE.Color('#ffffff'), DARK = new THREE.Color('#05070c');
+scene.background = WHITE.clone();
+
+/* lights for the Kithe 3D logo */
+scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(2,3,4); scene.add(key);
+
+/* ---------- Kithe logo: same four extruded shapes as kithe-logo-3d.html ---------- */
+const S=200, CX=512, CY=511.5;
+const mx=px=>(px-CX)/S, my=py=>(CY-py)/S;
+function roundedRect(x0,y0,x1,y1,r){
+  const s=new THREE.Shape();
+  s.moveTo(x0+r.tl,y1); s.lineTo(x1-r.tr,y1);
+  if(r.tr) s.quadraticCurveTo(x1,y1,x1,y1-r.tr); else s.lineTo(x1,y1);
+  s.lineTo(x1,y0+r.br);
+  if(r.br) s.quadraticCurveTo(x1,y0,x1-r.br,y0); else s.lineTo(x1,y0);
+  s.lineTo(x0+r.bl,y0);
+  if(r.bl) s.quadraticCurveTo(x0,y0,x0,y0+r.bl); else s.lineTo(x0,y0);
+  s.lineTo(x0,y1-r.tl);
+  if(r.tl) s.quadraticCurveTo(x0,y1,x0+r.tl,y1); else s.lineTo(x0,y1);
+  s.closePath(); return s;
+}
+function petal(tip,corner,c1,c2){
+  const s=new THREE.Shape(); s.moveTo(tip[0],tip[1]);
+  s.quadraticCurveTo(c1[0],c1[1],corner[0],corner[1]);
+  s.quadraticCurveTo(c2[0],c2[1],tip[0],tip[1]); s.closePath(); return s;
+}
+const EX={depth:0.17,bevelEnabled:true,bevelThickness:0.018,bevelSize:0.018,bevelOffset:0,bevelSegments:4,curveSegments:48};
+const mat=c=>new THREE.MeshStandardMaterial({color:new THREE.Color(c),roughness:0.34,metalness:0.12});
+const R=70/S,RB=55/S,RS=8/S;
+const L=mx(360),M=mx(468),TOP=my(363),BOT=my(660);
+const parts=[
+  {s:roundedRect(L,0,M,TOP,{tl:RS,tr:R,br:0,bl:0}),c:'#2c8b9c',from:[-3.2, 3.2]},
+  {s:roundedRect(L,BOT,M,0,{tl:0,tr:0,br:R,bl:RB}),c:'#1b5c7d',from:[-3.2,-3.2]},
+  {s:petal([M,0],[mx(668),TOP],[mx(668),0],[M,TOP]),c:'#35b77e',from:[ 3.2, 3.2]},
+  {s:petal([M,0],[mx(668),BOT],[mx(668),0],[M,BOT]),c:'#2c8f73',from:[ 3.2,-3.2]},
+];
+
+const kithe=new THREE.Group(), inner=new THREE.Group();
+parts.forEach((p,i)=>{
+  const g=new THREE.ExtrudeGeometry(p.s,EX); g.translate(0,0,-EX.depth/2);
+  const m=new THREE.Mesh(g,mat(p.c)); m.position.z=i*0.0012; p.mesh=m; inner.add(m);
+});
+const bb=new THREE.Box3().setFromObject(inner), ctr=bb.getCenter(new THREE.Vector3());
+inner.position.set(-ctr.x,-ctr.y,-ctr.z); kithe.add(inner); kithe.position.y=0.25; scene.add(kithe);
+
+/* ---------- textures ---------- */
+function glowTex(stops){
+  const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+  const g=x.createRadialGradient(64,64,0,64,64,64); stops.forEach(s=>g.addColorStop(s[0],s[1]));
+  x.fillStyle=g; x.fillRect(0,0,128,128); return new THREE.CanvasTexture(c);
+}
+const texGrain=glowTex([[0,'rgba(255,255,255,1)'],[.45,'rgba(220,230,245,.9)'],[1,'rgba(200,215,240,0)']]);
+
+/* ---------- the line of light ---------- */
+function lineTex(){
+  const c=document.createElement('canvas'); c.width=128; c.height=4; const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,128,0);
+  g.addColorStop(0,'rgba(190,205,235,0)'); g.addColorStop(.5,'rgba(215,225,245,1)'); g.addColorStop(1,'rgba(190,205,235,0)');
+  x.fillStyle=g; x.fillRect(0,0,128,4); return new THREE.CanvasTexture(c);
+}
+const texLine=lineTex();
+const LINE_X=0, TOP_END=1.3, BOT_END=-1.1;
+const NSEG=56;
+function ribbon(mapTex,color){
+  const g=new THREE.PlaneGeometry(1,1,1,NSEG);
+  const m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({map:mapTex||null,color:color||0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,vertexColors:true}));
+  g.setAttribute('color',new THREE.BufferAttribute(new Float32Array((NSEG+1)*2*3).fill(1),3));
+  m.frustumCulled=false; scene.add(m); return m;
+}
+// flowing highlights: soft bright bands that run down the stream like water catching light
+function flowTex(){
+  const W=16,H=256,c=document.createElement('canvas'); c.width=W; c.height=H; const x=c.getContext('2d'), id=x.createImageData(W,H);
+  const bumps=[]; for(let i=0;i<9;i++) bumps.push([Math.random()*H, 6+Math.random()*16, 0.5+Math.random()*0.5]);
+  for(let yy=0;yy<H;yy++){
+    let b=0.12; bumps.forEach(([cy,sg,a])=>{ for(const o of [-H,0,H]){ const d=(yy-cy+o)/sg; b+=a*Math.exp(-d*d); } });
+    b=Math.min(1,b);
+    for(let xx=0;xx<W;xx++){ const u=Math.abs((xx+.5)/W*2-1), a=Math.pow(1-u,2)*b; const k=(yy*W+xx)*4; id.data[k]=225;id.data[k+1]=235;id.data[k+2]=252;id.data[k+3]=Math.round(255*a); }
+  }
+  x.putImageData(id,0,0); const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+const texFlow=flowTex();
+const core=ribbon(null,0xe6ecf8), glow=ribbon(texLine), halo=ribbon(texLine), flow=ribbon(texFlow);
+// a soft bulb of light at the head of the stream while it falls
+const headBulb=new THREE.Sprite(new THREE.SpriteMaterial({map:texGrain,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false}));
+headBulb.scale.set(0.34,0.34,1); scene.add(headBulb);
+// sparkle that rides the leading tip and lingers at the bottom end
+const NG=70, gPos=new Float32Array(NG*3), gCol=new Float32Array(NG*3), gSeed=new Float32Array(NG*3);
+for(let i=0;i<gSeed.length;i++) gSeed[i]=Math.random();
+const gGeo=new THREE.BufferGeometry();
+gGeo.setAttribute('position',new THREE.BufferAttribute(gPos,3));
+gGeo.setAttribute('color',new THREE.BufferAttribute(gCol,3));
+const sparks=new THREE.Points(gGeo,new THREE.PointsMaterial({size:0.06,map:texGrain,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+sparks.frustumCulled=false; scene.add(sparks);
+
+/* ---------- helpers ---------- */
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const sm=x=>{x=clamp(x);return x*x*(3-2*x);};
+const eio=x=>{x=clamp(x);return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;};
+const eb=x=>{x=clamp(x);const c1=1.4,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2);};
+const seg=(t,a,b)=>clamp((t-a)/(b-a));
+const $p=document.getElementById('presents'), $w=document.getElementById('word'), $t=document.getElementById('tag'), $h=document.getElementById('hint');
+const ambient=scene.children.find(o=>o.isAmbientLight);
+
+function resize(){
+  const w=innerWidth,h=innerHeight; renderer.setSize(w,h,false); camera.aspect=w/h;
+  const th=Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
+  const need=Math.max(2.3/th, 1.9/(camera.aspect*th));
+  camera.position.set(0,0.25,need); camera.lookAt(0,0.25,0); camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize); resize();
+
+/* Kithe's logo comes in a new way every time */
+let order=[0,1,2,3];
+let W={};
+function pickEntrance(){
+  const R=(a,b)=>a+Math.random()*(b-a), dir=Math.random()<.5?-1:1;
+  W={ dir, turns:R(0.9,2.4), rad:R(2.2,4.2), shape:R(0.7,1.4), a0:R(0,Math.PI*2), sep:R(Math.PI/3,Math.PI*0.8)*(Math.random()<.5?1:-1),
+      sx:R(0.8,1.2), sy:R(0.8,1.3), bx:R(-1.5,1.5), by:R(-2.2,2.2), zd:R(-1.5,1.8), spin:R(0.8,3.2), tilt:R(-1.4,1.4), grow:R(0.2,0.6) };
+  order=[0,1,2,3].sort(()=>Math.random()-.5);
+}
+const FINAL=14.0;
+function frame(T){
+  // background goes dark while Kithe's logo is still there, then the logo is lost in the dark
+  const bgk=sm(seg(T,2.7,4.8));
+  scene.background.copy(WHITE).lerp(DARK,bgk);
+  document.body.style.background='#'+scene.background.getHexString();
+
+  parts.forEach((p,i)=>{
+    const o=order[i], t0=0.2+o*0.38, k=eb(seg(T,t0,t0+0.95)), r=1-k, sg=(i%2?1:-1);
+    // whirlwind: each part spirals in around the centre and spins as it lands; every play draws new settings
+    const ang=W.a0+i*W.sep+W.dir*W.turns*Math.PI*2*r, rad=W.rad*Math.pow(Math.max(r,0),W.shape);
+    let x=Math.cos(ang)*rad*W.sx+W.bx*r, y=Math.sin(ang)*rad*W.sy+W.by*r, z=W.zd*r;
+    let rz=W.dir*W.spin*Math.PI*2*r, ry=W.tilt*r*sg, sc=W.grow+(1-W.grow)*k;
+    p.mesh.position.set(x,y,i*0.0012+z); p.mesh.rotation.set(0,ry,rz); p.mesh.scale.setScalar(sc);
+    p.mesh.visible=T>t0-0.01;
+  });
+  // after landing: gentle turn, then it slips away into the dark (light fades, it drifts back and sinks)
+  const lost=sm(seg(T,4.2,7.2));
+  kithe.rotation.y=Math.sin(seg(T,1.9,3.6)*Math.PI)*0.45+lost*0.35;
+  kithe.position.set(0,0.25+0.05*Math.sin(T*1.6)-lost*0.25,-lost*3.2);
+  kithe.scale.setScalar(1);
+  const lum=1-lost;
+  ambient.intensity=0.9*lum; key.intensity=1.5*lum;
+  kithe.visible=lum>0.01;
+
+  $p.style.opacity=(sm(seg(T,1.5,2.0))*(1-sm(seg(T,2.9,3.5)))).toFixed(3);
+  const fadeOut=1-sm(seg(T,16.6,17.6));
+  $w.style.opacity=(sm(seg(T,10.6,12.0))*fadeOut).toFixed(3);
+  $t.style.opacity=(sm(seg(T,11.6,12.8))*fadeOut).toFixed(3);
+  $w.style.transform='translateY('+((1-sm(seg(T,10.6,12.0)))*10).toFixed(1)+'px)';
+
+  // the line of light: its head descends from above the screen to its resting end,
+  // then its top comes down and shortens it to the height it keeps
+  const FAR=5.0, A0=6.4, A1=8.3, B0=8.6, B1=10.4;
+  // the head falls like water from a hose: it speeds up, lands, and gives one small ripple
+  const fall=Math.pow(seg(T,A0,A1),1.85);
+  const ripple=T>A1?0.07*Math.exp(-5.5*(T-A1))*Math.sin(16*(T-A1)):0;
+  const bot = T<A0 ? FAR : BOT_END + (FAR-BOT_END)*(1-fall) + ripple;
+  const top = T<B0 ? FAR : TOP_END + (FAR-TOP_END)*(1-eio(seg(T,B0,B1)));
+  const on=sm(seg(T,A0-0.1,A0+0.4))*fadeOut;
+  const settle=sm(seg(T,9.4,11.6));                  // the sway calms, but the stream never goes dead
+  const bulge=1-sm(seg(T,A1,A1+0.9));                 // thicker, rounder head only while it falls
+  const shine=0.32+0.68*(1-sm(seg(T,9.6,12.2)));      // radiance stays at a gentle level in the end
+  const lenTop=Math.max(top,bot+0.001);
+  const placeRibbon=(m,w,o,wob,ext=0)=>{
+    const pos=m.geometry.attributes.position, col=m.geometry.attributes.color;
+    for(let j=0;j<=NSEG;j++){
+      const yEnd=bot-ext, y=lenTop-(lenTop-yEnd)*j/NSEG, dh=Math.max(0,y-bot);
+      const sway=(0.016*(1-0.75*settle)+0.006)*Math.sin(y*2.6-T*3.4+wob)*Math.min(1,dh/0.5)*(0.55+0.45*Math.min(1,dh/1.5)) ;
+      const hw=w*0.5*(1+1.5*bulge*Math.exp(-dh/0.22));
+      pos.setXYZ(j*2,LINE_X+sway-hw,y,0); pos.setXYZ(j*2+1,LINE_X+sway+hw,y,0);
+      const fd=ext>0?sm((y-yEnd)/(ext*1.05)):1; col.setXYZ(j*2,fd,fd,fd); col.setXYZ(j*2+1,fd,fd,fd);
+    }
+    pos.needsUpdate=true; col.needsUpdate=true; m.material.opacity=o;
+  };
+  placeRibbon(core,0.012,0.92*on,0);
+  placeRibbon(glow,0.09+0.05*shine,(0.10+0.38*shine)*on,0.3,0.3);
+  placeRibbon(halo,0.34,0.30*shine*on,0.6,0.34);
+  placeRibbon(flow,0.03,0.6*on,0);
+  texFlow.repeat.y=Math.max(0.2,(lenTop-bot)/1.1); texFlow.offset.y=-T*0.9;
+  // bulb of light at the head, riding the fall
+  const hb=T<A1+0.5?1:0.3+0.7*(1-sm(seg(T,A1+0.5,A1+1.6)));
+  headBulb.position.set(LINE_X,bot-0.08,0); headBulb.material.opacity=0.55*on*hb;
+  headBulb.scale.setScalar(0.3+0.1*Math.sin(T*9));
+  // sparkle rides the head, then keeps glinting at the bottom end (it stays in the final frame)
+  const head=bot, sparkA=on*(0.5+0.5*(1-sm(seg(T,9.0,10.8))));
+  for(let i=0;i<NG;i++){
+    const ph=((T*0.9+gSeed[i*3])%1);
+    const dy=(gSeed[i*3+1]-0.5)*0.34*(0.4+ph);
+    gPos[i*3]=(gSeed[i*3+2]-0.5)*0.12*(0.3+ph); gPos[i*3+1]=head+dy-ph*0.12; gPos[i*3+2]=0;
+    const b=sparkA*Math.sin(Math.PI*ph)*(0.4+0.6*gSeed[(i*7)%gSeed.length]);
+    gCol[i*3]=b*0.85;gCol[i*3+1]=b*0.9;gCol[i*3+2]=b;
+  }
+  gGeo.attributes.position.needsUpdate=true; gGeo.attributes.color.needsUpdate=true;
+
+  renderer.render(scene,camera);
+}
+
+/* ---------- playback ---------- */
+let gone=false; function done(){ if(gone) return; gone=true; location.replace('app.html'); }
+let start=performance.now(), still=false, lastLoop=0;
+const q=new URLSearchParams(location.search), fixed=q.get('t');
+pickEntrance();
+function tick(){
+  if(fixed!==null){ frame(parseFloat(fixed)); return; }
+  if(still){ frame(FINAL); return; }
+  const raw=(performance.now()-start)/1000, lp=Math.floor(raw/LOOP);
+  if(lp!==lastLoop){lastLoop=lp;pickEntrance();}
+  if(raw>=17.6){ done(); return; }
+  const T=raw%LOOP;
+  frame(T); requestAnimationFrame(tick);
+}
+if(fixed!==null){ frame(parseFloat(fixed)); window.__ready=true; }
+else if(reduce){ still=true; frame(FINAL); setTimeout(done,3000); }
+else { tick(); setTimeout(()=>{$h.classList.add('on');},1500); setTimeout(()=>{$h.classList.remove('on');},6500); }
+addEventListener('pointerdown',()=>done());
+window.__frame=frame;
+})();
+</script>
