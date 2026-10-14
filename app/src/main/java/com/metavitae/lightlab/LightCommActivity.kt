@@ -31,6 +31,15 @@ class LightCommActivity : Activity() {
     @Volatile private var findScore = 0.0
     @Volatile private var findAt = 0L
     @Volatile private var phase = "idle"
+    /** Sounds for this phone's own events: "on", "vibrate" or "off" (stealth, battery). */
+    @Volatile private var sounds = "on"
+    /** One cue for this phone's own event: a tone, a short buzz, or nothing. */
+    private fun cue(toneType: Int, ms: Int) {
+        when (sounds) {
+            "on" -> tone?.startTone(toneType, ms)
+            "vibrate" -> try { getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(ms.toLong().coerceAtMost(200), 180)) } catch (_: Exception) {}
+        }
+    }
     private var findLogged = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -92,21 +101,21 @@ class LightCommActivity : Activity() {
             }
             override fun sent(k: Int, text: String, ok: Boolean, tries: Int, seconds: Double) {
                 phase = "listening"; push("sent", "k" to k, "ok" to ok, "tries" to tries, "seconds" to seconds)
-                tone?.startTone(if (ok) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_NACK, 300)
+                cue(if (ok) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_NACK, 300)
             }
             override fun heard(r: BrightDecoder.Result, dup: Boolean) {
                 val zones = r.blocks.count { it < BrightListener.NB * BrightListener.NC }
                 val fine = r.blocks.count { it >= BrightListener.NCH }
                 push("heard", "ok" to r.ok, "dup" to dup, "text" to r.text, "from" to BrightFormat.phoneName(r.phoneTag),
                     "snr" to r.snr, "zones" to zones, "fine" to fine, "used" to JSONArray(r.blocks.filter { it < BrightListener.NB * BrightListener.NC }))
-                if (r.ok && !dup) tone?.startTone(ToneGenerator.TONE_PROP_ACK, 400)
+                if (r.ok && !dup) cue(ToneGenerator.TONE_PROP_ACK, 400)
             }
             override fun aim(score: Double) {
                 findScore = score; findAt = System.currentTimeMillis()
                 if (score >= 0.55 && findAt - findLogged > 3000) { findLogged = findAt; file?.append(String.format(java.util.Locale.US, "# find seen: match %.2f\n", score)) }
                 when {
-                    score >= 0.75 -> tone?.startTone(ToneGenerator.TONE_DTMF_D, 120)
-                    score >= 0.55 && (findAt / 700) % 2 == 0L -> tone?.startTone(ToneGenerator.TONE_DTMF_1, 250)
+                    score >= 0.75 -> cue(ToneGenerator.TONE_DTMF_D, 120)
+                    score >= 0.55 && (findAt / 700) % 2 == 0L -> cue(ToneGenerator.TONE_DTMF_1, 250)
                 }
             }
         }
@@ -122,6 +131,7 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun send(text: String) { talk?.enqueue(text.take(80)) }
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
+        @JavascriptInterface fun setSounds(s: String) { sounds = s }
         @JavascriptInterface fun brightness(level: Float) = runOnUiThread {
             window.attributes = window.attributes.apply { screenBrightness = level.coerceIn(0.02f, 1f) }
         }

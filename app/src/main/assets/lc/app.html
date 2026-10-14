@@ -181,6 +181,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     </div>
     <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
+    <div><div class="cap">SOUNDS (ONLY FOR THIS PHONE'S OWN EVENTS)</div><div class="seg" style="margin-top:8px">
+      <button data-s="on" onclick="setSounds('on')">On</button><button data-s="vibrate" onclick="setSounds('vibrate')">Vibrate</button><button data-s="off" onclick="setSounds('off')">Off</button></div></div>
     <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
     <div><div class="cap">TEST · AUTO-ANSWER</div>
       <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "COPY: …".</div>
@@ -192,7 +194,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 
 <script>
 const $ = id => document.getElementById(id);
-const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, poll:()=>'{"events":[],"phase":"idle"}' };
+const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, setSounds(){}, poll:()=>'{"events":[],"phase":"idle"}' };
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
                 set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
@@ -210,13 +212,15 @@ window.goBack = goBack;
 // ---------- look ----------
 function setMode(m){ document.documentElement.dataset.mode = m; store.set('lc.mode', m); drawSettings() }
 function setNight(v){ store.set('lc.night', +v); LC.brightness(v / 100); $('nightPct').textContent = v + '%'; $('nightLbl').textContent = 'NIGHT ' + v + '%' }
+function setSounds(s){ store.set('lc.sounds', s); LC.setSounds(s); LC.log('sounds ' + s); drawSettings() }
 function setAuto(on){ auto = on; store.set('lc.auto', on); LC.log('auto-answer ' + (on ? 'on' : 'off')); drawSettings() }
 function drawSettings(){ const m = store.get('lc.mode', 'red');
   document.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('sel', b.dataset.m === m));
+  document.querySelectorAll('[data-s]').forEach(b => b.classList.toggle('sel', b.dataset.s === store.get('lc.sounds', 'on')));
   $('autoOn').classList.toggle('sel', auto); $('autoOff').classList.toggle('sel', !auto);
   $('night').value = store.get('lc.night', 40); $('nightPct').textContent = $('night').value + '%';
   $('keyShow').textContent = cur ? cur.key : 'open a chat first' }
-setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.maxVolume();
+setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
 
 // ---------- chats ----------
 function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;

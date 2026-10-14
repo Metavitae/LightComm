@@ -218,7 +218,7 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
          * Returns (iso, exposure s).
          */
         fun settle(bg: Double, top: Double, iso: Int, expSec: Double): Pair<Int, Double> {
-            var g = if (bg > 0.5) 40.0 / bg else 1.0
+            var g = if (bg > 0.5) 40.0 / bg else 8.0   // nearly black: as sensitive as it goes (Oct 14: stayed at ISO 400 in the dark)
             if (top > 1) g = minOf(g, 170.0 / top)
             if (top >= 250) g = minOf(g, 0.35)     // white: we can't tell how far over, so step well down
             val total = iso * expSec * g             // ISO x seconds

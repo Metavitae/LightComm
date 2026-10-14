@@ -88,6 +88,8 @@ class Talk(
     private var sendNow = false
 
     private fun now() = SystemClock.elapsedRealtimeNanos() / 1e9
+    /** Seconds the other side gets to answer first after our message got through. */
+    private val REPLY_PRIORITY = 6.0
     private fun log(s: String) = file.append(s)
     private fun f1(x: Double) = String.format(Locale.US, "%.1f", x)
 
@@ -183,6 +185,8 @@ class Talk(
                 val text = box[next]
                 val (ok, n, round) = deliver(text, next + 1)
                 events?.sent(next + 1, text, ok, n, round)
+                // After "got it", the other side gets the first turn to answer (Oct 14: both phones kept sending at once).
+                if (ok && !o.turns) { quietSince = now() + REPLY_PRIORITY; sendNow = false }
                 if (ok) myTurn = false
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
@@ -264,6 +268,8 @@ class Talk(
                 log("# link dropped: next try uses the full opening\n")
             } else if (o.auto && li >= 0 && li < ladder.size - 1) { li++; log("# auto-speed: down to ${BrightFormat.MODES[ladder[li]].name}\n") }
             if (rx.hearing) Thread.sleep(500)
+            // No reply: maybe the other phone was sending too. Wait a random extra moment so the two drift apart.
+            if (got == null && !o.turns) Thread.sleep((1000 + Math.random() * 4000).toLong())
         }
         show("Message $k NOT delivered after ${o.tries} tries")
         return Triple(false, o.tries, 0.0)
