@@ -23,6 +23,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  */
 class LightCommActivity : Activity() {
     private lateinit var web: WebView
+    /** A small camera preview behind the screens (Oct 14: the POCO gave black pictures with no preview at all; Light Lab, which shows one, saw fine). */
+    private lateinit var preview: android.view.TextureView
     private var talk: Talk? = null
     private var talkKey = ""
     private val events = ConcurrentLinkedQueue<JSONObject>()
@@ -62,7 +64,11 @@ class LightCommActivity : Activity() {
                 android.util.Log.i("LightCommPage", "${m.message()} (${m.sourceId()}:${m.lineNumber()})"); return true
             }
         }
-        setContentView(web)
+        preview = android.view.TextureView(this)
+        val root = android.widget.FrameLayout(this)
+        root.addView(preview, android.widget.FrameLayout.LayoutParams((160 * resources.displayMetrics.density).toInt(), (120 * resources.displayMetrics.density).toInt()))
+        root.addView(web, android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+        setContentView(root)
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
         // The opening plays on a fresh open only (not when coming back from the background).
         web.loadUrl(if (b == null) "file:///android_asset/lc/intro.html" else "file:///android_asset/lc/app.html")
@@ -93,7 +99,7 @@ class LightCommActivity : Activity() {
         if (cams.isEmpty()) { push("problem", "text" to "No back camera."); return }
         val f = LiveFile(this, "lightcomm"); file = f
         val opts = Talk.Opts(emptyList(), 5, true, true, 2.0, 12.0, 4, 2.0, 0.0, 0, emptyList(), "lightcomm", "lightcomm")
-        val t = Talk(this, null, cams[0].first, MessageFormat.norm(key), opts, f) { }
+        val t = Talk(this, preview, cams[0].first, MessageFormat.norm(key), opts, f) { }
         t.watchFind = true
         t.events = object : Talk.Events {
             override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {
