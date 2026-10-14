@@ -31,6 +31,7 @@ class LightCommActivity : Activity() {
     @Volatile private var findScore = 0.0
     @Volatile private var findAt = 0L
     @Volatile private var phase = "idle"
+    private var findLogged = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(b: Bundle?) {
@@ -102,6 +103,7 @@ class LightCommActivity : Activity() {
             }
             override fun aim(score: Double) {
                 findScore = score; findAt = System.currentTimeMillis()
+                if (score >= 0.55 && findAt - findLogged > 3000) { findLogged = findAt; file?.append(String.format(java.util.Locale.US, "# find seen: match %.2f\n", score)) }
                 when {
                     score >= 0.75 -> tone?.startTone(ToneGenerator.TONE_DTMF_D, 120)
                     score >= 0.55 && (findAt / 700) % 2 == 0L -> tone?.startTone(ToneGenerator.TONE_DTMF_1, 250)
@@ -118,7 +120,7 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun open(key: String) = runOnUiThread { startTalk(key) }
         @JavascriptInterface fun close() = runOnUiThread { stopTalk() }
         @JavascriptInterface fun send(text: String) { talk?.enqueue(text.take(80)) }
-        @JavascriptInterface fun find() { talk?.findSec = 30 }
+        @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
         @JavascriptInterface fun brightness(level: Float) = runOnUiThread {
             window.attributes = window.attributes.apply { screenBrightness = level.coerceIn(0.02f, 1f) }
@@ -139,6 +141,7 @@ class LightCommActivity : Activity() {
                 o.put("find", if (System.currentTimeMillis() - findAt < 2000) findScore else 0.0)
                 o.put("live", JSONArray(rx.liveliness().map { it.toDouble() }))
                 o.put("orient", t.sensorOrientation)
+                if (rx.readyAt > 0) o.put("bg", rx.background()).put("top", rx.brightTop())
             }
             return o.toString()
         }

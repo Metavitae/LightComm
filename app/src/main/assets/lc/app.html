@@ -160,7 +160,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   </div>
   <div style="flex:1"></div>
   <div style="padding:0 20px 24px;display:flex;gap:12px">
-    <button class="bigbtn outline" onclick="doFind()">Find (blink 30 s)</button>
+    <button class="bigbtn outline" onclick="doFind()">Find: blink 60 s</button>
     <button class="bigbtn solid" onclick="show('vChat')">Back to chat</button>
   </div>
 </section>
@@ -170,6 +170,15 @@ input[type=range]{width:100%;accent-color:var(--ink)}
   <div class="top"><button class="icon" onclick="goBack()" aria-label="Back"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
     <div style="font-weight:800;font-size:19px;padding-left:6px">Settings</div></div>
   <div style="padding:20px;display:flex;flex-direction:column;gap:22px;overflow-y:auto">
+    <div style="border:1px dashed var(--line);border-radius:16px;padding:14px 16px">
+      <div class="cap">HOW TO TEST ALONE</div>
+      <ol style="margin:8px 0 0;padding-left:20px;font-size:16px;line-height:1.45">
+        <li>Both phones: open <b>Work test</b>.</li>
+        <li>Phone you leave behind: <b>Auto-answer: On</b> (below), then <b>Listen → Find</b>.</li>
+        <li>Walk away with the other phone. It beeps when it sees the blinking one.</li>
+        <li>Stand where it beeps fast. Tap <b>OK</b>. Wait for <b>got it</b>, then <b>COPY: OK</b>.</li>
+      </ol>
+    </div>
     <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
     <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
@@ -259,7 +268,13 @@ function cellFor(i, orient){ const b = Math.floor(i / 8), k = i % 8; let r, c;
 function drawSig(n){ const s = $('sig'); s.innerHTML = ''; for (let i = 0; i < 5; i++) { const e = document.createElement('span'); e.style.height = (8 + i * 5) + 'px'; if (i < n) e.className = 'f'; s.appendChild(e) }
   const t = document.createElement('span'); t.style.cssText = 'width:auto;border:0;background:none;margin-left:8px;font-weight:800;font-size:20px'; t.textContent = n ? n + '/5' : '-'; s.appendChild(t) }
 drawSig(0);
-function doFind(){ LC.find(); line('Blinking Find for 30 s. The other phone beeps when it sees it.', 30000) }
+// Find for one person: tap it on the phone you leave behind, walk away; it blinks for 60 s after 10 s,
+// and the phone in your hand beeps (fast and high = it sees it clearly).
+let findCount = 0, findTimer = null;
+function doFind(){ if (findTimer) return; findCount = 10;
+  findTimer = setInterval(() => { if (findCount > 0) { line('Find: this phone blinks in ' + findCount + ' s. Walk to where you will stand.', 1500); findCount-- }
+    else { clearInterval(findTimer); findTimer = null; LC.find(60); line('Find: blinking for 60 s. The other phone beeps when it sees this light.', 60000) } }, 1000);
+  show('vChat') }
 
 // ---------- live loop ----------
 function tick(){
@@ -280,7 +295,7 @@ function tick(){
     else if (e.type === 'problem') line(e.text, 10000)
   }
   const sending = st.phase === 'sending', hearing = !!st.hearing;
-  $('chatState').textContent = st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING · ' + me.toUpperCase() : 'IDLE';
+  $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (auto ? ' · AUTO-ANSWER ON' : '');
   $('hold').style.display = hearing && !sending ? 'block' : 'none';
   const pct = st.progress >= 0 ? Math.round(st.progress * 100) : -1;
   $('holdPct').textContent = pct >= 0 ? pct + '%' : ''; $('holdBar').style.width = (pct >= 0 ? pct : 15) + '%';
@@ -298,7 +313,9 @@ function tick(){
     else if (f >= 0.75) $('lnText').textContent = 'I see their Find light clearly. Leave this phone here.';
     else if (f >= 0.55) $('lnText').textContent = 'I see their Find light, faintly. Try moving a little.';
     else if (st.waiting > 0) $('lnText').textContent = 'Waiting for a clear line to send.';
-    else if (st.phase === 'listening') $('lnText').textContent = 'Listening. Their light off a wall, floor or ceiling counts.';
+    else if (st.phase === 'listening' && st.bg !== undefined && st.bg < 3 && st.top < 20) $('lnText').textContent = 'This phone sees almost nothing. Stand it up, or turn its back toward the room.';
+    else if (st.phase === 'listening' && auto) $('lnText').textContent = 'Auto-answer is on. Leave this phone here: it answers every message by itself.';
+    else if (st.phase === 'listening') $('lnText').textContent = 'Ready. Tap OK or write to send. Their light off a wall, floor or ceiling counts.';
   }
   $('lnEye').setAttribute('r', sending ? 7 : hearing ? 6 : 5);
 }
