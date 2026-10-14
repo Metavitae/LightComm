@@ -63,6 +63,16 @@ class MainActivity : Activity() {
             // adb: --es mode bright-reply --ei nonce N [--ez ok true]   (short reply to message N: got it / saw it but could not read it)
             "bright-reply" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 showBrightReply(intent.getIntExtra("nonce", 0), intent.getBooleanExtra("ok", true)) }
+            // adb: --es mode talk [--es send "A|B|C" (texts to send; none = only listen and reply)] [--ei speed 5] [--ez auto true] [--ez short true]
+            //      [--ei after 3000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
+            //      [--es expect "A|B|C" (texts the other phone sends, to count errors)] [--ei iso 0] [--es room lit] [--es paces 6m] [--es pass W]
+            "talk" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                fun list(n: String) = intent.getStringExtra(n)?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+                val opts = Talk.Opts(list("send"), intent.getIntExtra("speed", 5), intent.getBooleanExtra("auto", true), intent.getBooleanExtra("short", true),
+                    intent.getIntExtra("after", 3000) / 1000.0, intent.getIntExtra("wait", 12).toDouble(), intent.getIntExtra("tries", 4),
+                    intent.getIntExtra("gap", 2).toDouble(), intent.getIntExtra("start", 0).toDouble(), intent.getIntExtra("iso", 0),
+                    list("expect"), intent.getStringExtra("room") ?: "lit", intent.getStringExtra("paces") ?: "hand-width")
+                withCamera { showTalk(opts) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -1022,6 +1032,25 @@ class MainActivity : Activity() {
         status.text = "Listening for brightness messages..."
         tv.post(ticker)
         tv.postDelayed(scanner, 3000)
+    }
+
+    private fun showTalk(opts: Talk.Opts) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val pg = cameraPage("Talking in turns")
+        val tv = TextureView(this)
+        pg.camBox.addView(tv, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val status = pg.info.text("Starting...", 18f, bold = true, color = Color.rgb(255, 200, 0))
+        val heard = pg.info.text("", 18f, bold = true, color = Color.rgb(120, 200, 255))
+        val file = LiveFile(this, "talk")
+        pg.info.text("${if (opts.outbox.isEmpty()) "Listening and replying" else "Sending ${opts.outbox.size} messages, then listening"}. Saved live in ${file.path}", 13f, color = Color.LTGRAY)
+        val talk = Talk(this, tv, cams[0].first, savedPass(), opts, file) { st ->
+            runOnUiThread { if (st.startsWith("Read:")) heard.text = st else status.text = st }
+        }
+        pg.bar.barButton("Stop") { leave(); showMenu() }
+        stopCurrent = { talk.stop(); file.append("\nSTOPPED.\n") }
+        talk.start()
     }
 
     /** Draws the 12 x 8 blocks over the camera view; brighter yellow = light changing there. */

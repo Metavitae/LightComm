@@ -44,7 +44,8 @@ object BrightSim {
 
     data class Outcome(val ok: Boolean, val bitErrors: Int, val bits: Int, val stage: String, val seconds: Double)
 
-    fun run(text: String, mode: BrightFormat.Mode, torch: Torch, cam: Cam, room: Room, seed: Int, verbose: Boolean = false, snrScale: Double = 1.0): Outcome {
+    /** seq >= 1: a short opening (follow-up number seq of a link made by an earlier full send). */
+    fun run(text: String, mode: BrightFormat.Mode, torch: Torch, cam: Cam, room: Room, seed: Int, verbose: Boolean = false, snrScale: Double = 1.0, seq: Int = 0): Outcome {
         val r = Random(seed)
         val pass = "LIGHTCOMM"
         val nonce = r.nextInt(65536)
@@ -63,9 +64,10 @@ object BrightSim {
                 free = start + d
             }
         }
-        val syncW = BrightFormat.syncWave()
+        val link = if (seq >= 1) BrightFormat.Link(nonce xor 0x5a5a, BrightFormat.phoneTag("2312FPCA6G"), 9, seq - 1) else null
+        val syncW = BrightFormat.syncWave(link != null)
         play(BrightFormat.switches(syncW))
-        val send = BrightFormat.build(text, pass, nonce, mode, BrightFormat.phoneTag("2312FPCA6G"), BrightFormat.pminMs(calls))
+        val send = BrightFormat.build(text, pass, nonce, mode, BrightFormat.phoneTag("2312FPCA6G"), link?.pminMs ?: BrightFormat.pminMs(calls), link, seq)
         play(BrightFormat.switches(send.wave, syncW.n, send.wave.n, startState = syncW.on[syncW.n - 1] > 0))
         fun lightOn(a: Double, b: Double): Double {
             var sum = 0.0; var state = false; var last = 0.0
@@ -81,12 +83,13 @@ object BrightSim {
         if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
             println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
         val dec = BrightDecoder(pass, 0.0325)
-        val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6).take(3)
+        val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6, short = link != null).take(3)
         var res: BrightDecoder.Result? = null
-        for ((t0, c) in starts) { val x = dec.decode(ss, t0, c); if (res == null || x.ok) res = x; if (x.ok) break }
+        for ((t0, c) in starts) { val x = dec.decode(ss, t0, c, link); if (res == null || x.ok) res = x; if (x.ok) break }
         val bits = send.bodyCoded.size
         val errs = res?.coded?.takeIf { it.size == bits }?.let { cd -> cd.indices.count { cd[it] != send.bodyCoded[it] } } ?: bits / 2
         if (verbose) println("  starts=${starts.map { "%.3f/%.2f".format(it.first - lead, it.second) }} -> ${res?.stage} ${res?.text} ch=${res?.channels} snr=${"%.1f".format(res?.snr ?: 0.0)} apart=${res?.levelsApart} pmin=${res?.pminMs} ${res?.note}")
+        if (link != null && res?.ok == true && res.seq != seq) return Outcome(false, errs, bits, "wrong follow-up number ${res.seq}", send.wave.end)
         return Outcome(res?.ok == true && res.text == text, errs, bits, res?.stage ?: "staircase not found", send.wave.end)
     }
 

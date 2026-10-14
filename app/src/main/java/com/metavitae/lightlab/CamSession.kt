@@ -264,14 +264,20 @@ class CamSession(
         }
     }
 
-    fun close() {
+    fun close() { closeAndWait(0) }
+
+    /** Close, and wait up to `ms` for it to be done (the flashlight can't be switched while the camera is open). */
+    fun closeAndWait(ms: Long) {
+        val done = java.util.concurrent.CountDownLatch(1)
         handler.post {
             try { session?.close() } catch (_: Exception) {}
             try { device?.close() } catch (_: Exception) {}
             try { reader?.close() } catch (_: Exception) {}
             session = null; device = null; reader = null
+            done.countDown()
             thread.quitSafely()
         }
+        if (ms > 0) done.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     companion object {

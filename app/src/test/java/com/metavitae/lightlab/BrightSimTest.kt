@@ -46,5 +46,28 @@ class BrightSimTest {
         }
     }
 
+    @Test fun short_opening_reads_and_is_shorter() {
+        for ((torch, cam) in listOf(BrightSim.POCO_TORCH to BrightSim.CAM_8T, BrightSim.T8_TORCH to BrightSim.CAM_POCO))
+            for (m in listOf(0, 5, 6)) for (seq in listOf(1, 3)) for (room in listOf(BrightSim.DIM, BrightSim.LIT)) {
+                val mode = BrightFormat.MODES[m]
+                val o = BrightSim.run(BrightFormat.TEST_MESSAGES[1], mode, torch, cam, room, 31 * m + seq, seq = seq)
+                assertTrue("short ${mode.name} ${torch.name} seq $seq ${room.name}: ${o.stage}", o.ok)
+                val full = BrightSim.run(BrightFormat.TEST_MESSAGES[1], mode, torch, cam, room, 31 * m + seq)
+                assertTrue("full ${mode.name}: ${full.stage}", full.ok)
+                assertTrue("short must be shorter (${o.seconds} vs ${full.seconds})", o.seconds < full.seconds - 3)
+            }
+    }
+
+    @Test fun short_and_full_syncs_never_confused() {
+        val dec = BrightDecoder("LIGHTCOMM", 0.0325)
+        for ((short, other) in listOf(true to false, false to true)) {
+            val w = BrightFormat.syncWave(other)
+            val t = DoubleArray(150) { it / 30.0 + 0.2 }
+            val y = DoubleArray(t.size) { i -> val a = t[i] - 0.5; if (a < 0 || a >= w.end) 0.0 else 100 * w.light(a, a + 0.0325) / 0.0325 }
+            val hits = dec.findStarts(BrightDecoder.Series(t, y), 0.0, 3.0, 0.6, short = short)
+            assertTrue("short=$short found in the other sync: $hits", hits.isEmpty())
+        }
+    }
+
     @Test fun print_grid() { BrightSim.main(arrayOf("1")) }
 }

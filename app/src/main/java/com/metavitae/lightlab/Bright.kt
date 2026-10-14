@@ -29,17 +29,23 @@ import kotlin.math.sqrt
 object BrightFormat {
     const val SLOT = 1.0 / 30
     const val DARK = 15
-    /** 31-step test pattern (maximum-length sequence), played twice: sharp to find in time. */
-    val SYNC: IntArray = run {
-        var reg = 0x1F
-        val one = IntArray(31) { val b = ((reg shr 4) xor (reg shr 2)) and 1; reg = ((reg shl 1) or b) and 0x1F; b }
-        one + one
-    }
+    /** 31-step pattern (maximum-length sequence) from a 5-bit shift register with feedback from bits a and b. */
+    private fun mseq(a: Int, b: Int): IntArray { var reg = 0x1F; return IntArray(31) { val x = ((reg shr a) xor (reg shr b)) and 1; reg = ((reg shl 1) or x) and 0x1F; x } }
+    /** Test pattern played twice: sharp to find in time. */
+    val SYNC: IntArray = mseq(4, 2).let { it + it }
     val SYNC_SLOTS = DARK + SYNC.size
+    /**
+     * Short opening, once two phones are linked: a different 31-step pattern, played once (about 1 s).
+     * It matches the full sync at most 0.42 (the receiver needs 0.8), so the two are never confused.
+     */
+    val SHORT_SYNC: IntArray = mseq(4, 1)
+    /** Short header: mode 4 | length 8 | check byte 8 (keyed with the passphrase and the link). */
+    const val SHORT_HDR_BITS = 20
     const val TAIL = 9
     val BARKER = intArrayOf(1, 1, 1, 0, 0, 1, 0)
     const val HDR_BITS = 60
     val HDR_SYMS = BARKER.size + HDR_BITS / 4 * 7
+    val SHORT_HDR_SYMS = BARKER.size + SHORT_HDR_BITS / 4 * 7
     const val TRAIN_REPEAT = 3
     const val PILOT_EVERY = 32
     const val MAX_BYTES = 80
@@ -158,6 +164,29 @@ object BrightFormat {
     fun headerCheck(bits: List<Int>): Int {
         val bytes = ByteArray(7) { k -> var v = 0; for (i in 0 until 8) v = (v shl 1) or (bits.getOrElse(k * 8 + i) { 0 }); v.toByte() }
         return MessageFormat.crc8(bytes)
+    }
+
+    /**
+     * A link: after one full send was answered "got it", follow-up sends use the short opening.
+     * id = nonce of that first message; each follow-up has a number (seq 1, 2, ...) and its own
+     * nonce made from the passphrase, the link and that number, so it never travels in the light.
+     * The receiver knows the sender's shortest pulse and phone tag from the first message.
+     */
+    data class Link(val id: Int, val tag: Int, val pminMs: Int, val lastSeq: Int)
+    fun seqNonce(pass: String, linkId: Int, seq: Int): Int {
+        val k = MessageFormat.keystream("$pass/link/$seq", linkId, 2)
+        return ((k[0].toInt() and 0xff) shl 8) or (k[1].toInt() and 0xff)
+    }
+    /** Short header's check byte: over nonce, mode and length, plus the passphrase stamp (a stranger can't make it). */
+    fun shortCheck(pass: String, nonce: Int, modeNibble: Int, len: Int): Int {
+        val st = MessageFormat.tag(pass, nonce)
+        return MessageFormat.crc8(byteArrayOf((nonce shr 8).toByte(), nonce.toByte(), modeNibble.toByte(), len.toByte(), (st shr 8).toByte(), st.toByte()))
+    }
+    fun shortHeaderBits(pass: String, nonce: Int, mode: Mode, len: Int, packed: Boolean): IntArray {
+        val b = ArrayList<Int>()
+        val m = mode.id or (if (packed) 8 else 0)
+        bitsOf(m, 4, b); bitsOf(len, 8, b); bitsOf(shortCheck(pass, nonce, m, len), 8, b)
+        return interleave(hamming(b))
     }
 
     /** CRC-16 (CCITT): one wrong message in ~65,000 slips through, instead of one in 256 with 8 bits. */
@@ -290,10 +319,10 @@ object BrightFormat {
     }
 
     /** Where the parts of a send are (symbol indexes in the Wave). */
-    class Layout(val mode: Mode, val len: Int) {
+    class Layout(val mode: Mode, val len: Int, val short: Boolean = false) {
         val syncFirst = 0
-        val hdrFirst = DARK + SYNC.size
-        val trainFirst = hdrFirst + HDR_SYMS
+        val hdrFirst = DARK + (if (short) SHORT_SYNC.size else SYNC.size)
+        val trainFirst = hdrFirst + (if (short) SHORT_HDR_SYMS else HDR_SYMS)
         val bodyFirst = trainFirst + mode.levels * TRAIN_REPEAT
         val nData = dataSymbolCount(len, mode)
         val bodySyms = nData + ceil(nData.toDouble() / PILOT_EVERY).toInt() * 4
@@ -330,10 +359,10 @@ object BrightFormat {
         return w
     }
 
-    /** Dark + sync: the same for every send. */
-    fun syncWave(): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
+    /** Dark + sync: the same for every send (short = the short opening's sync). */
+    fun syncWave(short: Boolean = false): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in if (short) SHORT_SYNC else SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
 
-    class Send(val wave: Wave, val layout: Layout, val bodySyms: IntArray, val bodyCoded: IntArray, val pminMs: Int)
+    class Send(val wave: Wave, val layout: Layout, val bodySyms: IntArray, val bodyCoded: IntArray, val pminMs: Int, val nonce: Int)
 
     fun utf8(text: String): ByteArray {
         val b = text.toByteArray(Charsets.UTF_8)
@@ -343,22 +372,28 @@ object BrightFormat {
         return b.copyOf(n)
     }
 
-    /** The whole send. pminMs = the sender's shortest pulse, measured while the sync played. */
-    fun build(text: String, pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int): Send {
+    /**
+     * The whole send. pminMs = the sender's shortest pulse, measured while the sync played.
+     * With a link and seq >= 1: short opening (short sync and short header), nonce made from the link.
+     */
+    fun build(text: String, pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int, link: Link? = null, seq: Int = 0): Send {
         val packed = TextPack.pack(text)?.takeIf { it.size <= MAX_BYTES }
         val data = packed ?: utf8(text)
-        val lay = Layout(mode, data.size)
-        val w = syncWave()
+        val short = link != null && seq >= 1
+        val n = if (short) seqNonce(pass, link!!.id, seq) else nonce
+        val lay = Layout(mode, data.size, short)
+        val w = syncWave(short)
         val ts = mode.symSec
         val pmin = pminMs / 1000.0
-        for (b in BARKER + headerBits(pass, nonce, mode, tag, pminMs, data.size, packed != null)) w.add(ts, if (b == 1) ts else 0.0)
+        val hdr = if (short) shortHeaderBits(pass, n, mode, data.size, packed != null) else headerBits(pass, n, mode, tag, pminMs, data.size, packed != null)
+        for (b in BARKER + hdr) w.add(ts, if (b == 1) ts else 0.0)
         for (l in trainSymbols(mode)) w.add(ts, mode.onSec(l, pmin))
-        val coded = bodyBits(data, pass, nonce)
+        val coded = bodyBits(data, pass, n)
         val (body, _) = withPilots(bitsToSymbols(coded, mode), mode)
         check(body.size == lay.bodySyms)
         for (l in body) w.add(ts, mode.onSec(l, pmin))
         repeat(TAIL) { w.add(SLOT, 0.0) }
-        return Send(w, lay, body, coded, pminMs)
+        return Send(w, lay, body, coded, pminMs, n)
     }
 
     /** Flashlight switch times (seconds from the start, on/off) for symbols from..until, skipping switches that change nothing. */
@@ -396,6 +431,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         val blocks: List<Int> = emptyList(),
         /** Text was sent packed (TextPack). */
         val packed: Boolean = false,
+        /** Short opening (linked): which follow-up number it was; 0 = full opening. */
+        val seq: Int = 0,
     )
 
     /** Per-channel timing and brightness curve. */
@@ -429,13 +466,15 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
     }
 
     private val sync = BrightFormat.syncWave()
+    private val shortSync = BrightFormat.syncWave(short = true)
 
-    /** Find sends (their sync pattern) in a channel between times from..to. Returns (t0, correlation), best first. */
-    fun findStarts(s: Series, from: Double, to: Double, minCorr: Double = 0.8): List<Pair<Double, Double>> {
+    /** Find sends (their sync pattern; short = the short opening's) in a channel between times from..to. Returns (t0, correlation), best first. */
+    fun findStarts(s: Series, from: Double, to: Double, minCorr: Double = 0.8, short: Boolean = false): List<Pair<Double, Double>> {
         val step = 1.0 / 120
+        val sw = if (short) shortSync else sync
         val c = ArrayList<Pair<Double, Double>>()
         var t0 = from
-        while (t0 <= to) { c.add(t0 to corr(s, t0, sync, sync.end)); t0 += step }
+        while (t0 <= to) { c.add(t0 to corr(s, t0, sw, sw.end)); t0 += step }
         val peaks = ArrayList<Pair<Double, Double>>()
         for (i in c.indices) {
             if (c[i].second < minCorr) continue
@@ -463,10 +502,10 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         return best
     }
 
-    private fun timing(s: Series, t0Guess: Double): Chan? {
+    private fun timing(s: Series, t0Guess: Double, sw: BrightFormat.Wave): Chan? {
         var best = t0Guess; var bestC = -1.0
         var t = t0Guess - 0.025
-        while (t <= t0Guess + 0.025) { val c = corr(s, t, sync, sync.end); if (c > bestC) { bestC = c; best = t }; t += 0.0005 }
+        while (t <= t0Guess + 0.025) { val c = corr(s, t, sw, sw.end); if (c > bestC) { bestC = c; best = t }; t += 0.0005 }
         return if (bestC < 0.5) null else Chan(s, best, bestC)
     }
 
@@ -626,9 +665,9 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
      * Guess-free version (like a radio's automatic volume): in a 2.4 s window, the darkest and
      * brightest pictures are compared with those during the sync, and scaled back to match.
      */
-    private fun envelopeDrift(chans: List<Chan>): Array<Drift> = Array(chans.size) { ci ->
+    private fun envelopeDrift(chans: List<Chan>, syncEnd: Double): Array<Drift> = Array(chans.size) { ci ->
         val c = chans[ci]; val s = c.s
-        val syncA = c.t0 + BrightFormat.DARK * BrightFormat.SLOT; val syncB = c.t0 + BrightFormat.syncWave().end
+        val syncA = c.t0 + BrightFormat.DARK * BrightFormat.SLOT; val syncB = c.t0 + syncEnd
         val ref = s.y.indices.filter { s.t[it] in syncA..syncB }.map { s.y[it] }.sorted()
         val off = DoubleArray(s.t.size); val gain = DoubleArray(s.t.size) { 1.0 }
         if (ref.size < 20) return@Array Drift(off, gain)
@@ -646,10 +685,15 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
 
     // ------------------------------------------------------------ whole message
 
-    /** Try to read one send whose sync starts near t0 (receiver clock). */
-    fun decode(series: List<Series>, t0: Double, syncCorr: Double): Result {
-        var chans = series.mapNotNull { timing(it, t0) }
-        val w = BrightFormat.syncWave()
+    /**
+     * Try to read one send whose sync starts near t0 (receiver clock).
+     * link != null: a short opening from that link (follow-up numbers lastSeq .. lastSeq + 8 are tried).
+     */
+    fun decode(series: List<Series>, t0: Double, syncCorr: Double, link: BrightFormat.Link? = null): Result {
+        val short = link != null
+        val syncW = BrightFormat.syncWave(short)
+        var chans = series.mapNotNull { timing(it, t0, syncW) }
+        val w = BrightFormat.syncWave(short)
         chans.forEach { fit(it, w, w.end) }
         // Clear channels first; if none (far away), try the faint ones: the stamp and check bytes still guard the text.
         val clear = chans.filter { it.swing > 4 * it.sigma }
@@ -658,22 +702,30 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         if (chans.isEmpty()) return Result(false, "sync seen but too weak to read", t0 = t0, syncCorr = syncCorr)
 
         // Header: on/off at each text speed in use; the one whose stamp is right wins.
-        val hs = BrightFormat.HDR_SYMS
+        val hs = if (short) BrightFormat.SHORT_HDR_SYMS else BrightFormat.HDR_SYMS
+        val syncSlots = syncW.n
         var hdr: IntArray? = null; var rate = 0
         var headerNote = ""
+        var seq = 0
         fun headerOk(bits: IntArray): Boolean {
+            if (link != null) {
+                val m = bitsInt(bits, 0, 4); val l = bitsInt(bits, 4, 8); val chk = bitsInt(bits, 12, 8)
+                for (k in max(1, link.lastSeq)..link.lastSeq + 8)
+                    if (chk == BrightFormat.shortCheck(pass, BrightFormat.seqNonce(pass, link.id, k), m, l)) { seq = k; return true }
+                return false
+            }
             val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
             return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52))
         }
         rates@ for (tryRate in BrightFormat.RATES) {
             val ts = 1.0 / tryRate
-            val trial = BrightFormat.syncWave()
+            val trial = BrightFormat.syncWave(short)
             repeat(hs) { trial.add(ts, Double.NaN) }
             val forced = IntArray(hs) { if (it < BrightFormat.BARKER.size) BrightFormat.BARKER[it] else -1 }
             chans.forEach { fit(it, w, w.end) }
             var drift: Array<Drift>? = null
             for (attempt in 0..2) {
-                val syms = viterbi(chans, trial, BrightFormat.SYNC_SLOTS, hs, doubleArrayOf(0.0, ts), forced, drift, tailKnown = false)
+                val syms = viterbi(chans, trial, syncSlots, hs, doubleArrayOf(0.0, ts), forced, drift, tailKnown = false)
                 debugHdr?.let { e -> if (e.size == hs && tryRate == debugRate) println("    header rate $tryRate attempt $attempt: wrong symbols ${e.indices.count { e[it] != syms[it] }} of $hs; wrong at " +
                     e.indices.filter { e[it] != syms[it] }.joinToString(",")) }
                 val bits = BrightFormat.unhamming(BrightFormat.deinterleave(syms.copyOfRange(BrightFormat.BARKER.size, hs)))
@@ -683,26 +735,33 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                     break@rates
                 }
                 // Next tries: follow slow changes (a shadow, a lamp): first guess-free, then from these guesses.
-                for (k in 0 until hs) trial.on[BrightFormat.SYNC_SLOTS + k] = if (syms[k] == 1) ts else 0.0
-                val d = if (attempt == 0) envelopeDrift(chans) else driftFrom(chans, trial, 0.0, trial.end)
+                for (k in 0 until hs) trial.on[syncSlots + k] = if (syms[k] == 1) ts else 0.0
+                val d = if (attempt == 0) envelopeDrift(chans, syncW.end) else driftFrom(chans, trial, 0.0, trial.end)
                 drift = d
                 chans.forEachIndexed { ci, c -> fit(c, w, w.end, d[ci]) }
             }
         }
-        if (hdr != null) chans.forEach { fit(it, w, BrightFormat.syncWave().end) }
+        if (hdr != null) chans.forEach { fit(it, w, syncW.end) }
         val best0 = chans.first()
-        if (hdr == null) return Result(false, "header not read (or another passphrase)", t0 = t0, channels = chans.size, syncCorr = syncCorr,
+        if (hdr == null) return Result(false, if (short) "short header not read" else "header not read (or another passphrase)", t0 = t0, channels = chans.size, syncCorr = syncCorr,
             snr = best0.swing / best0.sigma)
-        val nonce = bitsInt(hdr, 16, 16)
-        val modeId = bitsInt(hdr, 33, 3)
-        val packed = bitsInt(hdr, 32, 1) == 1
-        val tag = bitsInt(hdr, 36, 4)
-        val pminMs = bitsInt(hdr, 40, 4)
-        val len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
+        val nonce: Int; val modeId: Int; val packed: Boolean; val tag: Int; val pminMs: Int; val len: Int
+        if (link != null) {
+            nonce = BrightFormat.seqNonce(pass, link.id, seq)
+            modeId = bitsInt(hdr, 1, 3); packed = bitsInt(hdr, 0, 1) == 1; tag = link.tag; pminMs = link.pminMs; len = bitsInt(hdr, 4, 8)
+            headerNote = "short opening #$seq; " + headerNote
+        } else {
+            nonce = bitsInt(hdr, 16, 16)
+            modeId = bitsInt(hdr, 33, 3)
+            packed = bitsInt(hdr, 32, 1) == 1
+            tag = bitsInt(hdr, 36, 4)
+            pminMs = bitsInt(hdr, 40, 4)
+            len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
+        }
         val mode = BrightFormat.MODES.getOrNull(modeId)
         if (mode == null || mode.perSec != rate || len !in 1..BrightFormat.MAX_BYTES)
             return Result(false, "header read but makes no sense (mode $modeId, length $len)", t0 = t0, channels = chans.size, syncCorr = syncCorr)
-        val lay = BrightFormat.Layout(mode, len)
+        val lay = BrightFormat.Layout(mode, len, short)
         val pmin = pminMs / 1000.0
         val levelOn = DoubleArray(mode.levels) { mode.onSec(it, pmin) }
         // Mode staircase is known: learn the brightness curve again with it.
@@ -744,7 +803,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         for (pass in 2..3) {
             if (text != null) break
             for (j in 0 until nBody) w.on[lay.bodyFirst + j] = levelOn[body[j]]
-            val drift = if (pass == 2) envelopeDrift(chans) else driftFrom(chans, w, 0.0, w.end)
+            val drift = if (pass == 2) envelopeDrift(chans, syncW.end) else driftFrom(chans, w, 0.0, w.end)
             chans.forEachIndexed { ci, c -> fit(c, w, w.end, drift[ci]) }
             body = viterbi(chans, w, lay.bodyFirst, nBody, levelOn, forced, drift)
             val r = read(body); coded = r.first; text = r.second
@@ -757,7 +816,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         val endT = t0 + w.end
         return Result(text != null, if (text != null) "read" else "check byte wrong", text ?: "", mode, tag, nonce, len, pminMs, t0,
             coded, body, chans.size, syncCorr, note, apart, best.swing / best.sigma, endT,
-            blocks = chans.map { c -> series.indexOfFirst { it === c.s } }.filter { it >= 0 }, packed = packed)
+            blocks = chans.map { c -> series.indexOfFirst { it === c.s } }.filter { it >= 0 }, packed = packed, seq = seq)
     }
 
     companion object {

@@ -72,12 +72,18 @@ class BrightSender(private val ctx: Context) {
         }
     }
 
-    /** One send. beaconSec > 0 plays the passphrase rhythm first (for "Listen for us"). */
-    fun send(text: String, mode: BrightFormat.Mode, pass: String, beaconSec: Double, progress: (String) -> Unit): Sent {
+    /**
+     * One send. beaconSec > 0 plays the passphrase rhythm first (for "Listen for us").
+     * link + seq >= 1: short opening (the link's shortest pulse is used, so both phones agree).
+     * nonce >= 0: send with this nonce (a resend of the same full message).
+     */
+    fun send(text: String, mode: BrightFormat.Mode, pass: String, beaconSec: Double,
+             link: BrightFormat.Link? = null, seq: Int = 0, nonce0: Int = -1, progress: (String) -> Unit): Sent {
         val cm = ctx.getSystemService(CameraManager::class.java)
         val id = torchCamera(ctx)?.first ?: return Sent(text, mode, 0, 0, 0, 0.0, Stats(emptyList()), Stats(emptyList()), 0.0, "no flashlight")
         try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
-        val nonce = java.security.SecureRandom().nextInt(65536)
+        val short = link != null && seq >= 1
+        var nonce = if (nonce0 >= 0) nonce0 else java.security.SecureRandom().nextInt(65536)
         val late = ArrayList<Double>(); val calls = ArrayList<Double>()
         var failure: String? = null
         var state = false
@@ -109,12 +115,13 @@ class BrightSender(private val ctx: Context) {
             play(b, 0.0, false)
             offset = beaconSec + 0.5
         }
-        progress("Sync pattern (and timing my own flashlight)...")
-        val sync = BrightFormat.syncWave()
+        progress(if (short) "Short opening #$seq..." else "Sync pattern (and timing my own flashlight)...")
+        val sync = BrightFormat.syncWave(short)
         play(BrightFormat.switches(sync), offset, true)
-        val pmin = BrightFormat.pminMs(calls)
+        val pmin = if (short) link!!.pminMs else BrightFormat.pminMs(calls)
         val tag = BrightFormat.phoneTag(Build.MODEL)
-        val s = BrightFormat.build(text, pass, nonce, mode, tag, pmin)
+        val s = BrightFormat.build(text, pass, nonce, mode, tag, pmin, link, seq)
+        nonce = s.nonce
         progress("Sending \"${text.take(20)}\" in ${mode.name} (shortest pulse $pmin ms)...")
         play(BrightFormat.switches(s.wave, sync.n, s.wave.n, startState = state), offset, true)
         try { cm.setTorchMode(id, false) } catch (_: Exception) {}
@@ -183,6 +190,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     @Volatile var scanFrom = 0.0
     /** Receiver clock time from which pictures count (set once the sensitivity has settled); 0 = not ready yet. */
     @Volatile var readyAt = 0.0
+    /** Also look this many seconds before "ready" (talk: a send's dark start may come while the camera settles). */
+    @Volatile var earlySec = 0.0
     private var lastWeakT = -1e9
     /** Nonce of our own message whose short reply we are waiting for (-1 = none). */
     @Volatile var expect = -1
@@ -199,6 +208,17 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     @Volatile var iso = 0
     var lastUsed: Set<Int> = emptySet()
         private set
+    /** Link with the other phone (set by the talk loop): short openings from it are looked for too. */
+    @Volatile var inLink: BrightFormat.Link? = null
+    /** Texts the other phone is expected to send (to count errors before repair). */
+    @Volatile var expectTexts: List<String> = BrightFormat.TEST_MESSAGES
+    /** Everything read (or read up to the header) and every short reply found, for the talk loop. */
+    val heard = java.util.concurrent.LinkedBlockingQueue<BrightDecoder.Result>()
+    val replies = java.util.concurrent.LinkedBlockingQueue<Pair<Int, Boolean>>()
+    /** A send has started and is still coming (don't start sending over it). */
+    @Volatile var hearing = false
+    /** Send whose header was read but whose end is still coming: (start, end); skip re-reading it until then. */
+    private var pending: Pair<Double, Double>? = null
     val tally = LinkedHashMap<String, IntArray>()   // "mode|from" -> (right, sent)
     var lastLine = ""
 
@@ -261,10 +281,13 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     fun scan(): List<String> {
         val now = newest()
         if (now == 0.0 || readyAt == 0.0) return emptyList()
-        if (scanFrom < readyAt) scanFrom = readyAt
+        if (scanFrom < readyAt - earlySec) scanFrom = readyAt - earlySec
         val syncLen = BrightFormat.syncWave().end
+        val shortLen = BrightFormat.syncWave(short = true).end
+        val link = inLink
         val from = maxOf(scanFrom, now - 140)
-        if (now - from < syncLen + 1) return emptyList()
+        if (now - from < (if (link != null) shortLen else syncLen) + 1) return emptyList()
+        pending?.let { (pt, pe) -> if (pt >= from - 0.1 && now < pe) return emptyList() }
         val ws = window(from - 0.1, now)
         scanReply(syncLen)?.let { return listOf(it) }
         // Find the sync on the whole picture and on the 4 liveliest blocks.
@@ -272,9 +295,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         // and the blocks that carried our last read send (a small far light is easy to lose among the lively ones).
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
         val search = (listOf(NB * NC) + lively + known).distinct()
-        val starts = search.flatMap { dec.findStarts(ws[it], from, now - syncLen - 0.3, 0.8) }
+        val starts = search.flatMap { ch -> dec.findStarts(ws[ch], from, now - syncLen - 0.3, 0.8).map { Triple(it.first, it.second, false) } +
+            (if (link != null) dec.findStarts(ws[ch], from, now - shortLen - 0.3, 0.8, short = true).map { Triple(it.first, it.second, true) } else emptyList()) }
         val t0 = starts.minByOrNull { it.first } ?: run {
-            scanFrom = maxOf(scanFrom, now - syncLen - 2)
+            hearing = false
+            scanFrom = maxOf(scanFrom, now - (if (link != null) shortLen else syncLen) - 2)
             // Near-miss note: a sync-like shape that was too weak to read, so a miss shows which side lost it.
             val weak = dec.findStarts(ws[NB * NC], from, now - syncLen - 0.3, 0.65).firstOrNull()
             if (weak != null && weak.first - lastWeakT > 1.0) {
@@ -283,15 +308,21 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
             }
             return emptyList()
         }
-        val c = starts.filter { kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
+        val short = t0.third
+        val c = starts.filter { it.third == short && kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
         val all = window(t0.first - 0.5, now)
-        val r = dec.decode(all, t0.first, c)
-        val headerDone = t0.first + syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last() + 1.0
-        if (r.mode != null && r.endT > now) return emptyList()         // header read, rest still coming
+        val r = dec.decode(all, t0.first, c, if (short) link else null)
+        val headerDone = t0.first + (if (short) shortLen + BrightFormat.SHORT_HDR_SYMS.toDouble() / BrightFormat.RATES.last()
+                                     else syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last()) + 1.0
+        hearing = true
+        if (r.mode != null && r.endT > now) { pending = t0.first to r.endT; return emptyList() }   // header read, rest still coming
         if (r.mode == null && now < headerDone) return emptyList()       // wait for the header at the slow speed
+        hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
         if (r.ok) known = r.blocks.filter { it < NB * NC }.take(6)
-        return listOf(logLine(r))
+        val line = logLine(r)
+        heard.add(r)
+        return listOf(line)
     }
 
     /** If a short reply is expected: look for it on the whole picture, the liveliest blocks and the known ones. */
@@ -300,7 +331,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         if (n < 0) return null
         val now = newest()
         val replyLen = BrightFormat.replyWave(pass, n, true).end
-        val from = maxOf(replyFrom, readyAt, now - 30)
+        // Half a second before "ready" too: the reply's dark start may come while the camera settles.
+        val from = maxOf(replyFrom, readyAt - 0.5, now - 30)
         if (now - from < replyLen + 0.5) return null
         val ws = window(from - 0.1, now)
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
@@ -308,6 +340,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         replyFrom = now - replyLen - 0.2
         val best = hits.maxByOrNull { it.second } ?: return null
         expect = -1
+        replies.add(n to best.third)
         return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready\n",
             if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt)
     }
@@ -321,10 +354,12 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         if (mode != null && r.coded != null) {
             fun bytesOf(t: String) = (if (r.packed) TextPack.pack(t) else null) ?: BrightFormat.utf8(t)
             // Two test messages can pack to the same length: match the text read first, then the length.
-            val exp = BrightFormat.TEST_MESSAGES.firstOrNull { r.ok && it == r.text } ?: BrightFormat.TEST_MESSAGES.firstOrNull { bytesOf(it).size == r.len }
+            val texts = expectTexts
+            val exp = texts.firstOrNull { r.ok && it == r.text } ?: texts.firstOrNull { bytesOf(it).size == r.len }
             if (exp != null) {
                 expectedText = exp
                 val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce)
+                    .takeIf { it.size == r.coded.size } ?: r.coded
                 bitErr = e.indices.count { e[it] != r.coded[it] }
                 val sym = BrightFormat.withPilots(BrightFormat.bitsToSymbols(e, mode), mode).first
                 val got = r.bodySyms!!
