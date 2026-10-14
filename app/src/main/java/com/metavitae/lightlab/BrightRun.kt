@@ -271,7 +271,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         var bitErr = -1; var symErr = -1; var nSym = 0; var expectedText = ""
         if (mode != null && r.coded != null) {
             fun bytesOf(t: String) = (if (r.packed) TextPack.pack(t) else null) ?: BrightFormat.utf8(t)
-            val exp = BrightFormat.TEST_MESSAGES.firstOrNull { bytesOf(it).size == r.len }
+            // Two test messages can pack to the same length: match the text read first, then the length.
+            val exp = BrightFormat.TEST_MESSAGES.firstOrNull { r.ok && it == r.text } ?: BrightFormat.TEST_MESSAGES.firstOrNull { bytesOf(it).size == r.len }
             if (exp != null) {
                 expectedText = exp
                 val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce)
