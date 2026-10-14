@@ -64,14 +64,16 @@ class MainActivity : Activity() {
             "bright-reply" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 showBrightReply(intent.getIntExtra("nonce", 0), intent.getBooleanExtra("ok", true)) }
             // adb: --es mode talk [--es send "A|B|C" (texts to send; none = only listen and reply)] [--ei speed 5] [--ez auto true] [--ez short true]
-            //      [--ei after 3000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
+            //      [--ei after 2000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
             //      [--es expect "A|B|C" (texts the other phone sends, to count errors)] [--ei iso 0] [--es room lit] [--es paces 6m] [--es pass W]
+            //      [--ez turns true --ez first true|false --ei idle 45]  (both phones send, taking turns)
             "talk" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 fun list(n: String) = intent.getStringExtra(n)?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
                 val opts = Talk.Opts(list("send"), intent.getIntExtra("speed", 5), intent.getBooleanExtra("auto", true), intent.getBooleanExtra("short", true),
-                    intent.getIntExtra("after", 3000) / 1000.0, intent.getIntExtra("wait", 12).toDouble(), intent.getIntExtra("tries", 4),
+                    intent.getIntExtra("after", 2000) / 1000.0, intent.getIntExtra("wait", 12).toDouble(), intent.getIntExtra("tries", 4),
                     intent.getIntExtra("gap", 2).toDouble(), intent.getIntExtra("start", 0).toDouble(), intent.getIntExtra("iso", 0),
-                    list("expect"), intent.getStringExtra("room") ?: "lit", intent.getStringExtra("paces") ?: "hand-width")
+                    list("expect"), intent.getStringExtra("room") ?: "lit", intent.getStringExtra("paces") ?: "hand-width",
+                    intent.getBooleanExtra("turns", false), intent.getBooleanExtra("first", true), intent.getIntExtra("idle", 45).toDouble())
                 withCamera { showTalk(opts) } }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))

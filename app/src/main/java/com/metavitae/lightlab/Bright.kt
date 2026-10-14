@@ -707,15 +707,20 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         var hdr: IntArray? = null; var rate = 0
         var headerNote = ""
         var seq = 0
-        fun headerOk(bits: IntArray): Boolean {
+        // A header must pass its check AND make sense (known mode at the speed tried, length 1-80);
+        // a garbled one that passes the check by chance doesn't stop the other speeds from being tried.
+        fun sane(modeId: Int, l: Int, tryRate: Int) = BrightFormat.MODES.getOrNull(modeId)?.perSec == tryRate && l in 1..BrightFormat.MAX_BYTES
+        fun headerOk(bits: IntArray, tryRate: Int): Boolean {
             if (link != null) {
                 val m = bitsInt(bits, 0, 4); val l = bitsInt(bits, 4, 8); val chk = bitsInt(bits, 12, 8)
+                if (!sane(m and 7, l, tryRate)) return false
                 for (k in max(1, link.lastSeq)..link.lastSeq + 8)
                     if (chk == BrightFormat.shortCheck(pass, BrightFormat.seqNonce(pass, link.id, k), m, l)) { seq = k; return true }
                 return false
             }
             val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
-            return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52))
+            val l = bitsInt(bits, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
+            return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52)) && sane(bitsInt(bits, 33, 3), l, tryRate)
         }
         rates@ for (tryRate in BrightFormat.RATES) {
             val ts = 1.0 / tryRate
@@ -729,7 +734,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                 debugHdr?.let { e -> if (e.size == hs && tryRate == debugRate) println("    header rate $tryRate attempt $attempt: wrong symbols ${e.indices.count { e[it] != syms[it] }} of $hs; wrong at " +
                     e.indices.filter { e[it] != syms[it] }.joinToString(",")) }
                 val bits = BrightFormat.unhamming(BrightFormat.deinterleave(syms.copyOfRange(BrightFormat.BARKER.size, hs)))
-                if (headerOk(bits)) {
+                if (headerOk(bits, tryRate)) {
                     hdr = bits; rate = tryRate; headerNote = if (attempt == 0) "" else "header on pass ${attempt + 1}; "
                     for (k in 0 until hs) w.add(ts, if (syms[k] == 1) ts else 0.0)
                     break@rates

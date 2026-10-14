@@ -21,6 +21,11 @@ import kotlin.math.max
  * next sends use a 1 s sync and a 20-bit header (about 4.7 s of fixed cost at 15 per second
  * instead of about 10.5 s). A short send that gets no reply at all drops the link (next try: full).
  *
+ * Turns (both phones have texts): a phone sends when it starts first, or right after it answered
+ * "got it" to the other phone's message (then it's its turn, and the other phone is still listening).
+ * If nothing is heard for `idle` seconds it sends anyway; a try with no reply waits a random 0-2.5 s
+ * before the next one, so two phones that started together drift apart.
+ *
  * Speeds for auto-speed: on/off only, 30, 15 and 10 per second (modes 0, 5, 6). It steps down
  * after each failed try and up after 2 messages in a row got through on the first try.
  */
@@ -36,6 +41,8 @@ class Talk(
         val waitReply: Double,
         val tries: Int, val gap: Double, val startDelay: Double, val isoFixed: Int,
         val expect: List<String>, val room: String, val paces: String,
+        /** Take turns with the other phone (see above); first = this phone starts. */
+        val turns: Boolean = false, val first: Boolean = true, val idle: Double = 45.0,
     )
 
     private val exp = 0.0325
@@ -53,6 +60,10 @@ class Talk(
     private var li = ladder.indexOf(o.startMode)
     private var streak = 0
     private val seen = HashSet<Int>()
+    private var next = 0
+    private var myTurn = o.first
+    /** Answered "got it" and it's our turn: send right away, the other phone is still listening. */
+    private var sendNow = false
 
     private fun now() = SystemClock.elapsedRealtimeNanos() / 1e9
     private fun log(s: String) = file.append(s)
@@ -121,15 +132,18 @@ class Talk(
         }, 700, 700, TimeUnit.MILLISECONDS)
         show("Listening...")
         val startAt = now() + o.startDelay
-        var next = 0
         var quietSince = now()
         val rounds = ArrayList<Double>(); var delivered = 0; var tries = 0
         if (o.outbox.isNotEmpty()) log("SEND_HEAD msg,try,opening,mode,levels,per_sec,nonce,send_s,listening_after_s,outcome,reply_seen_after_s,round_s,text\n")
         while (alive) {
             val r = rx.heard.poll(200, TimeUnit.MILLISECONDS)
-            if (r != null) { answer(r); quietSince = now(); continue }
-            if (next < o.outbox.size && now() >= startAt && !rx.hearing && now() - quietSince >= o.gap) {
+            if (r != null) { answer(r); quietSince = now(); if (!sendNow) continue }
+            if (o.turns && !myTurn && next < o.outbox.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
+            val turnOk = !o.turns || myTurn
+            if (next < o.outbox.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
+                if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val (ok, n, round) = deliver(o.outbox[next], next + 1)
+                myTurn = false
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
                 if (next == o.outbox.size) {
@@ -160,6 +174,8 @@ class Talk(
         log(String.format(Locale.US, "# replied %s to nonce %d%s%s: noticed %.1f s after it ended, reply started %.1f s after, took %.1f s, late %.0f us, %s\n",
             if (r.ok) "GOT IT" else "COULD NOT READ", r.nonce, if (r.seq > 0) " (short opening #${r.seq})" else "", if (dup) " (again: seen before)" else "",
             noticed, startedAfter, sec, lateUs, fail ?: "ok"))
+        // Our turn now: send straight away (the other phone is listening), no need to open the camera first.
+        if (o.turns && r.ok && !dup && next < o.outbox.size) { myTurn = true; sendNow = true; return }
         openCam()
     }
 
@@ -205,6 +221,7 @@ class Talk(
                 log("# link dropped: next try uses the full opening\n")
             } else if (o.auto && li >= 0 && li < ladder.size - 1) { li++; log("# auto-speed: down to ${BrightFormat.MODES[ladder[li]].name}\n") }
             if (rx.hearing) Thread.sleep(500)
+            if (o.turns && got == null) Thread.sleep((Math.random() * 2500).toLong())
         }
         show("Message $k NOT delivered after ${o.tries} tries")
         return Triple(false, o.tries, 0.0)
