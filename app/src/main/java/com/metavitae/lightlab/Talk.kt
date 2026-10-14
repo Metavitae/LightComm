@@ -23,8 +23,9 @@ import kotlin.math.max
  *
  * Turns (both phones have texts): a phone sends when it starts first, or right after it answered
  * "got it" to the other phone's message (then it's its turn, and the other phone is still listening).
- * If nothing is heard for `idle` seconds it sends anyway; a try with no reply waits a random 0-2.5 s
- * before the next one, so two phones that started together drift apart.
+ * A phone keeps its turn until its message got through. Only the first phone may break a long silence
+ * (nothing heard for `idle` seconds), so the two never both decide to send at the same moment
+ * (Oct 14, first try: both waited the same 45 s and kept sending over each other).
  *
  * Speeds for auto-speed: on/off only, 30, 15 and 10 per second (modes 0, 5, 6). It steps down
  * after each failed try and up after 2 messages in a row got through on the first try.
@@ -138,12 +139,12 @@ class Talk(
         while (alive) {
             val r = rx.heard.poll(200, TimeUnit.MILLISECONDS)
             if (r != null) { answer(r); quietSince = now(); if (!sendNow) continue }
-            if (o.turns && !myTurn && next < o.outbox.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
+            if (o.turns && o.first && !myTurn && next < o.outbox.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
             if (next < o.outbox.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val (ok, n, round) = deliver(o.outbox[next], next + 1)
-                myTurn = false
+                if (ok) myTurn = false
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
                 if (next == o.outbox.size) {
@@ -221,7 +222,6 @@ class Talk(
                 log("# link dropped: next try uses the full opening\n")
             } else if (o.auto && li >= 0 && li < ladder.size - 1) { li++; log("# auto-speed: down to ${BrightFormat.MODES[ladder[li]].name}\n") }
             if (rx.hearing) Thread.sleep(500)
-            if (o.turns && got == null) Thread.sleep((Math.random() * 2500).toLong())
         }
         show("Message $k NOT delivered after ${o.tries} tries")
         return Triple(false, o.tries, 0.0)
