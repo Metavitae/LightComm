@@ -45,6 +45,13 @@ class LightCommActivity : Activity() {
         web.settings.allowFileAccess = true
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.addJavascriptInterface(Bridge(), "LC")
+        // Keep page changes (opening -> app) inside this view, and page messages in the phone log.
+        web.webViewClient = android.webkit.WebViewClient()
+        web.webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                android.util.Log.i("LightCommPage", "${m.message()} (${m.sourceId()}:${m.lineNumber()})"); return true
+            }
+        }
         setContentView(web)
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
         // The opening plays on a fresh open only (not when coming back from the background).
