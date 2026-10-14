@@ -67,6 +67,10 @@ class MainActivity : Activity() {
             //      [--ei after 2000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
             //      [--es expect "A|B|C" (texts the other phone sends, to count errors)] [--ei iso 0] [--es room lit] [--es paces 6m] [--es pass W]
             //      [--ez turns true --ez first true|false --ei idle 240]  (both phones send, taking turns)
+            // adb: --es mode aim-send [--ei rate 15] [--ei secs 600]   (blink the aiming pattern; the other phone runs aim-recv and beeps)
+            "aim-send" -> showAimSend(intent.getIntExtra("rate", 15), intent.getIntExtra("secs", 600))
+            // adb: --es mode aim-recv [--ei rate 15]   (beeps louder/faster the better it sees the aiming pattern)
+            "aim-recv" -> withCamera { showAimRecv(intent.getIntExtra("rate", 15)) }
             "talk" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 fun list(n: String) = intent.getStringExtra(n)?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
                 val opts = Talk.Opts(list("send"), intent.getIntExtra("speed", 5), intent.getBooleanExtra("auto", true), intent.getBooleanExtra("short", true),
@@ -1034,6 +1038,79 @@ class MainActivity : Activity() {
         status.text = "Listening for brightness messages..."
         tv.post(ticker)
         tv.postDelayed(scanner, 3000)
+    }
+
+    private fun showAimSend(rate: Int, secs: Int) {
+        onMenu = false
+        val sender = BrightSender(this)
+        stopCurrent = { sender.running = false }
+        scrollPage {
+            text("Aiming: blinking", 24f, bold = true)
+            text("Blinking the aiming pattern ($rate per second) for up to ${secs / 60} min. The other phone runs \"Aiming: listen\" and beeps when it sees this light. Never aim the light at anyone's eyes.", 14f)
+            button("Stop") { sender.running = false; stopCurrent = null }
+        }
+        Thread { sender.aim(rate, secs.toDouble()) }.start()
+    }
+
+    private fun showAimRecv(rate: Int) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val pg = cameraPage("Aiming: listen")
+        val tv = TextureView(this)
+        pg.camBox.addView(tv, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val big = pg.info.text("Starting...", 44f, bold = true, color = Color.rgb(255, 200, 0))
+        pg.info.text("Fast high beeps = I see the other phone's light clearly. Slow low beeps = faint. Silence = nothing.", 14f, color = Color.LTGRAY)
+        val file = LiveFile(this, "aim")
+        val exp = 0.0325
+        val rx = BrightListener(this, savedPass(), exp)
+        val c = CamSession(this, cams[0].first, tv) { }
+        c.manual = true; c.fps = 30; c.expNs = (exp * 1e9).toLong(); c.iso = 400
+        c.zoneSink = { ts, fine -> rx.add(ts, fine) }
+        val am = getSystemService(android.media.AudioManager::class.java)
+        try { am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC), 0) } catch (_: Exception) {}
+        val tone = try { android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
+        val w = BrightFormat.aimWave(rate, 20.0)
+        val period = BrightFormat.SHORT_SYNC.size.toDouble() / rate
+        var alive = true
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        file.append(Results.header("Aiming, listener") + "Pattern: 31 steps at $rate per second (period ${"%.2f".format(period)} s)\ntime,match,on_fine_square\n")
+        pg.bar.barButton("Stop") { leave(); showMenu() }
+        stopCurrent = { alive = false; c.close(); worker.shutdown(); tone?.release() }
+        // Automatic sensitivity once (as the receiver does), then score every half second.
+        tv.postDelayed({
+            if (!alive) return@postDelayed
+            val bg = rx.background()
+            if (bg > 0.5) { c.iso = (c.iso * 40.0 / bg).toInt().coerceIn(100, 1600); c.apply() }
+            tv.postDelayed({ if (alive) rx.readyAt = rx.newest() }, 1000)
+        }, 2000)
+        var lastBeep = 0L
+        val tick = object : Runnable {
+            override fun run() {
+                if (!alive) return
+                worker.execute {
+                    val (m, fine) = try { rx.aimScore(3.0, w, period) } catch (_: Exception) { 0.0 to false }
+                    file.append(String.format(Locale.US, "%s,%.2f,%s\n", java.text.SimpleDateFormat("HH:mm:ss", Locale.US).format(java.util.Date()), m, fine))
+                    val nowMs = SystemClock.elapsedRealtime()
+                    when {
+                        m >= 0.75 -> { tone?.startTone(android.media.ToneGenerator.TONE_DTMF_D, 120); lastBeep = nowMs }
+                        m >= 0.55 && nowMs - lastBeep > 1400 -> { tone?.startTone(android.media.ToneGenerator.TONE_DTMF_1, 250); lastBeep = nowMs }
+                    }
+                    runOnUiThread {
+                        if (!alive) return@runOnUiThread
+                        big.text = if (rx.readyAt == 0.0) "Starting..." else "${(m * 100).toInt()}  " + when { m >= 0.75 -> "CLEAR"; m >= 0.55 -> "faint"; else -> "nothing" }
+                    }
+                }
+                tv.postDelayed(this, 350)
+            }
+        }
+        if (tv.isAvailable) c.open {} else tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w2: Int, h: Int) { c.open {} }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w2: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture) = true
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        tv.post(tick)
     }
 
     private fun showTalk(opts: Talk.Opts) {

@@ -367,6 +367,16 @@ object BrightFormat {
         return w
     }
 
+    /**
+     * Aiming pattern (Oct 14): the short opening's 31-step pattern played over and over at `perSec`.
+     * The phone being placed listens for it and beeps when its camera sees it (the founder holds that phone).
+     */
+    fun aimWave(perSec: Int, seconds: Double): Wave {
+        val w = Wave(); val ts = 1.0 / perSec
+        while (w.end < seconds) for (b in SHORT_SYNC) w.add(ts, if (b == 1) ts else 0.0)
+        return w
+    }
+
     /** Dark + sync: the same for every send (short = the short opening's sync). */
     fun syncWave(short: Boolean = false): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in if (short) SHORT_SYNC else SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
 
@@ -454,6 +464,9 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
     }
 
     // ------------------------------------------------------------ finding the send
+
+    /** How well a picture series matches the wave started at t0 (correlation, pictures up to `until` s after t0). */
+    fun match(s: Series, t0: Double, w: BrightFormat.Wave, until: Double) = corr(s, t0, w, until)
 
     private fun corr(s: Series, t0: Double, w: BrightFormat.Wave, until: Double): Double {
         var i = lowerBound(s.t, t0)

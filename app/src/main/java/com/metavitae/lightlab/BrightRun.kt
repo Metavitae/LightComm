@@ -158,6 +158,26 @@ class BrightSender(private val ctx: Context) {
         return Triple(w.end, if (late.isEmpty()) 0.0 else late.average(), null)
     }
 
+    /** Aiming: play the aiming pattern over and over until stopped or `maxSec` is up. */
+    fun aim(perSec: Int, maxSec: Double) {
+        val cm = ctx.getSystemService(CameraManager::class.java)
+        val id = torchCamera(ctx)?.first ?: return
+        try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
+        val w = BrightFormat.aimWave(perSec, maxSec)
+        var state = false
+        val t0 = System.nanoTime() + 50_000_000
+        running = true
+        for ((t, on) in BrightFormat.switches(w)) {
+            if (!running) break
+            waitUntil(t0 + (t * 1e9).toLong())
+            if (on == state) continue
+            try { cm.setTorchMode(id, on) } catch (_: Exception) { break }
+            state = on
+        }
+        try { cm.setTorchMode(id, false) } catch (_: Exception) {}
+        running = false
+    }
+
     /** Line for the sender's results file. */
     fun line(i: Int, s: Sent) = String.format(Locale.US, "%d,%s,%d,%d,%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f,%s,\"%s\"\n",
         i, Build.MODEL, s.mode.id, s.mode.levels, s.mode.perSec, s.pminMs, s.seconds, s.lateUs.mean, s.callUs.mean, s.callUs.pct(0.95), s.firstCallUs,
@@ -400,6 +420,29 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         replies.add(n to best.third)
         return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready%s\n",
             if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt, if (lastReplyFine) " (best on a fine square)" else "")
+    }
+
+    /**
+     * Aiming score: best match of the aiming pattern over the last `win` seconds, on the whole picture, the
+     * liveliest blocks and the most flickering fine squares. Returns (match 0..1, best on a fine square?).
+     */
+    fun aimScore(win: Double, w: BrightFormat.Wave, period: Double): Pair<Double, Boolean> {
+        val now = newest(); if (now == 0.0 || readyAt == 0.0) return 0.0 to false
+        val a = maxOf(now - win, readyAt)
+        if (now - a < 2.0) return 0.0 to false
+        val fz = flickery(a, now)
+        val ws = window(a, now) + fineWindow(a, now, fz)
+        val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(8)
+        var best = 0.0; var fine = false
+        for (ch in (listOf(NB * NC) + lively).distinct() + fz.indices.map { NCH + it }) {
+            var t0 = a - period
+            while (t0 < a) {
+                val c = dec.match(ws[ch], t0, w, now - t0)
+                if (c > best) { best = c; fine = ch >= NCH }
+                t0 += 1.0 / 60
+            }
+        }
+        return best to fine
     }
 
     private fun variance(y: DoubleArray): Double { if (y.isEmpty()) return 0.0; val m = y.average(); return y.sumOf { (it - m) * (it - m) } / y.size }
