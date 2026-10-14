@@ -51,6 +51,8 @@ class Talk(
         fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {}
         fun sent(k: Int, text: String, ok: Boolean, tries: Int, seconds: Double) {}
         fun heard(r: BrightDecoder.Result, dup: Boolean) {}
+        /** Something the person must act on (camera stuck, ...). */
+        fun problem(text: String) {}
         /** How well the other phone's Find pattern is seen now (0..1), about every 0.7 s while listening. */
         fun aim(score: Double) {}
     }
@@ -119,10 +121,26 @@ class Talk(
             isoSet = true
             Thread.sleep(600)
         } else Thread.sleep(500)
+        // Oct 14: the POCO's camera got stuck giving pure black pictures (no noise at all, even at full sensitivity)
+        // until the phone's own Camera app was opened once. Try a fresh start once; then tell the person.
+        if (blackCamera() && alive) {
+            log("# camera gives pure black pictures: starting it again\n")
+            cam?.closeAndWait(2000); Thread.sleep(400)
+            val c2 = CamSession(act, camId, tv) { }
+            c2.manual = true; c2.fps = 30; c2.expNs = (exp * 1e9).toLong(); c2.iso = iso
+            c2.onError = { e -> log("# camera problem: $e\n") }
+            c2.zoneSink = { ts, fine -> rx.add(ts, fine) }
+            cam = c2; c2.open {}
+            Thread.sleep(1200)
+            if (blackCamera()) { log("# camera still black\n"); events?.problem("Camera stuck: open the phone's Camera app once, then come back.") }
+        }
         rx.iso = iso
         rx.readyAt = rx.newest()
         return now() - t0
     }
+
+    /** Pure black: not even picture noise (a dark room still gives some). */
+    private fun blackCamera() = rx.newest() > 0 && rx.background() < 0.05 && rx.brightTop() < 0.5
 
     private fun closeCam() {
         rx.readyAt = 0.0

@@ -123,6 +123,7 @@ class LightCommActivity : Activity() {
                     "snr" to r.snr, "zones" to zones, "fine" to fine, "used" to JSONArray(r.blocks.filter { it < BrightListener.NB * BrightListener.NC }))
                 if (r.ok && !dup) cue(ToneGenerator.TONE_PROP_ACK, 400)
             }
+            override fun problem(text: String) { push("problem", "text" to text) }
             override fun aim(score: Double) {
                 findScore = score; findAt = System.currentTimeMillis()
                 if (score >= 0.55 && findAt - findLogged > 3000) { findLogged = findAt; file?.append(String.format(java.util.Locale.US, "# find seen: match %.2f\n", score)) }
