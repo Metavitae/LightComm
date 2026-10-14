@@ -27,6 +27,10 @@ button{cursor:pointer}
 /* Chat and Listen: the live camera picture shows through, darkened (aim while chatting) */
 #vChat,#vListen{background:var(--veil)}
 #vChat .top{background:var(--bg)}
+#bgZones{position:absolute;left:0;right:0;top:0;display:none;grid-template-columns:repeat(12,1fr);gap:3px;padding:3px;pointer-events:none;z-index:0}
+#bgZones .z{aspect-ratio:auto;height:100%}
+#vChat > *{position:relative;z-index:1}
+#vChat > #bgZones{position:absolute;z-index:0}
 .cap{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.1em;color:var(--dim)}
 .pill{height:44px;padding:0 16px;border:1px solid var(--line);background:var(--panel);border-radius:999px;font-weight:500;font-size:16px;white-space:nowrap}
 .bigbtn{flex:1;height:56px;border-radius:16px;font-weight:800;font-size:17px;display:flex;align-items:center;justify-content:center;gap:10px}
@@ -114,6 +118,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 
 <!-- ============ CHAT ============ -->
 <section class="view" id="vChat">
+  <div id="bgZones" aria-hidden="true"></div>
   <div class="top">
     <button class="icon" style="width:44px" onclick="leaveChat()" aria-label="Back to chats"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
     <svg width="40" height="40" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="16" stroke="var(--line)" stroke-width="1.4"/><circle cx="24" cy="8" r="3.2" fill="var(--ink)"/><circle cx="24" cy="40" r="3.2" fill="var(--dim)"/><circle cx="24" cy="24" r="2" fill="var(--hi)"/></svg>
@@ -186,8 +191,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
     <div><div class="cap">SOUNDS (ONLY FOR THIS PHONE'S OWN EVENTS)</div><div class="seg" style="margin-top:8px">
       <button data-s="on" onclick="setSounds('on')">On</button><button data-s="vibrate" onclick="setSounds('vibrate')">Vibrate</button><button data-s="off" onclick="setSounds('off')">Off</button></div></div>
-    <div><div class="cap">CAMERA BEHIND CHAT (AIM WHILE CHATTING)</div><div class="seg" style="margin-top:8px">
-      <button id="camOn" onclick="setCam(true)">On</button><button id="camOff" onclick="setCam(false)">Off</button></div></div>
+    <div><div class="cap">BEHIND THE CHAT (AIM WHILE CHATTING)</div><div class="seg" style="margin-top:8px">
+      <button data-b="camera" onclick="setBack('camera')">Camera</button><button data-b="zones" onclick="setBack('zones')">Zones</button><button data-b="off" onclick="setBack('off')">Off</button></div></div>
     <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
     <div><div class="cap">TEST · AUTO-ANSWER</div>
       <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "COPY: …".</div>
@@ -217,17 +222,18 @@ window.goBack = goBack;
 // ---------- look ----------
 function setMode(m){ document.documentElement.dataset.mode = m; store.set('lc.mode', m); drawSettings() }
 function setNight(v){ store.set('lc.night', +v); LC.brightness(v / 100); $('nightPct').textContent = v + '%'; $('nightLbl').textContent = 'NIGHT ' + v + '%' }
-function setCam(on){ store.set('lc.cam', on); LC.cameraBehind(on); drawSettings() }
+// Behind the chat: the real camera picture, the zone divisions (lit toward the strongest light change, framed = our pattern), or nothing.
+function setBack(b){ store.set('lc.back', b); LC.cameraBehind(b === 'camera'); $('bgZones').style.display = b === 'zones' ? 'grid' : 'none'; drawSettings() }
 function setSounds(s){ store.set('lc.sounds', s); LC.setSounds(s); LC.log('sounds ' + s); drawSettings() }
 function setAuto(on){ auto = on; store.set('lc.auto', on); LC.log('auto-answer ' + (on ? 'on' : 'off')); drawSettings() }
 function drawSettings(){ const m = store.get('lc.mode', 'red');
   document.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('sel', b.dataset.m === m));
   document.querySelectorAll('[data-s]').forEach(b => b.classList.toggle('sel', b.dataset.s === store.get('lc.sounds', 'on')));
-  $('camOn').classList.toggle('sel', store.get('lc.cam', true)); $('camOff').classList.toggle('sel', !store.get('lc.cam', true));
+  document.querySelectorAll('[data-b]').forEach(x => x.classList.toggle('sel', x.dataset.b === store.get('lc.back', 'zones')));
   $('autoOn').classList.toggle('sel', auto); $('autoOff').classList.toggle('sel', !auto);
   $('night').value = store.get('lc.night', 40); $('nightPct').textContent = $('night').value + '%';
   $('keyShow').textContent = cur ? cur.key : 'open a chat first' }
-setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); LC.cameraBehind(store.get('lc.cam', true)); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
+setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); setBack(store.get('lc.back', 'zones')); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
 
 // ---------- chats ----------
 function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;
@@ -269,7 +275,9 @@ function bars(snr){ return snr >= 20 ? 5 : snr >= 12 ? 4 : snr >= 7 ? 3 : snr >=
 function line(t, hold){ $('lnText').textContent = t; lastNote = { t, until: Date.now() + (hold || 0) } }
 
 // ---------- listen view ----------
-const grid = [];
+const grid = [], bgGrid = [];
+(function(){ const z = $('bgZones'); for (let i = 0; i < 96; i++) { const c = document.createElement('div'); c.className = 'z'; z.appendChild(c); bgGrid.push(c) } })();
+function sizeBg(){ const w = window.innerWidth; $('bgZones').style.height = Math.round(w * 4 / 3) + 'px' } sizeBg(); addEventListener('resize', sizeBg);
 (function(){ const z = $('zones'); z.style.gridTemplateColumns = 'repeat(12,1fr)';
   for (let i = 0; i < 96; i++) { const c = document.createElement('div'); c.className = 'z'; z.appendChild(c); grid.push(c) } })();
 // Receiver blocks are 12 row bands x 8 column blocks in the camera's own (landscape) layout; drawn the way the phone is held.
@@ -298,7 +306,8 @@ function tick(){
       line(e.ok ? 'Got it. Delivered.' : 'Not delivered. Move closer or change the light, then tap the message.', 6000) }
     else if (e.type === 'heard') {
       lastHeard = e; drawSig(bars(e.snr)); $('zUsed').textContent = e.zones + (e.fine ? ' + ' + e.fine : '');
-      grid.forEach(c => c.classList.remove('used')); (e.used || []).forEach(i => grid[cellFor(i, st.orient || 90)].classList.add('used'));
+      grid.forEach(c => c.classList.remove('used')); bgGrid.forEach(c => c.classList.remove('used'));
+      (e.used || []).forEach(i => { grid[cellFor(i, st.orient || 90)].classList.add('used'); bgGrid[cellFor(i, st.orient || 90)].classList.add('used') });
       if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : '') }); drawMsgs();
         line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
         if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text.slice(0, 40)) }
@@ -315,7 +324,8 @@ function tick(){
   $('lsWho').textContent = hearing ? 'SOMEONE IS SENDING' : 'WAITING FOR LIGHT'; $('lsPct').textContent = pct >= 0 ? pct + '%' : '';
   $('lsBar').style.width = hearing ? (pct >= 0 ? pct : 10) + '%' : '0';
   const f = st.find || 0; $('lsLock').textContent = f >= 0.75 ? 'FIND · CLEAR' : f >= 0.55 ? 'FIND · FAINT' : '';
-  if (st.live) { const mx = Math.max(1e-3, ...st.live); st.live.forEach((v, i) => { const c = grid[cellFor(i, st.orient || 90)]; c.style.background = 'var(--ink)'; c.style.opacity = (0.06 + 0.8 * v / mx).toFixed(2) }) }
+  if (st.live) { const mx = Math.max(1e-3, ...st.live); st.live.forEach((v, i) => { const k = cellFor(i, st.orient || 90), o = (0.06 + 0.8 * v / mx).toFixed(2);
+    grid[k].style.background = 'var(--ink)'; grid[k].style.opacity = o; bgGrid[k].style.background = 'var(--ink)'; bgGrid[k].style.opacity = (o * 0.45).toFixed(2) }) }
   // Lightnet line: what is going on right now, unless a fresh note is still showing.
   if (!lastNote || Date.now() > lastNote.until) {
     if (st.phase === 'starting') $('lnText').textContent = 'Waking the camera…';
