@@ -58,7 +58,11 @@ class MainActivity : Activity() {
                 showBrightSend(BrightRunPlan.from(intent)) }
             // adb: --es mode bright-recv [--es room dim|lit] [--es paces 5] [--ei iso 0 (0 = automatic)] [--ei trace 90 (seconds of raw brightness saved after ready)] [--es pass W]
             "bright-recv" -> { intent.getStringExtra("pass")?.let { savePass(it) }
-                withCamera { showBrightRecv(intent.getStringExtra("room") ?: "dim", intent.getStringExtra("paces") ?: "hand-width", intent.getIntExtra("iso", 0), intent.getIntExtra("trace", 0)) } }
+                withCamera { showBrightRecv(intent.getStringExtra("room") ?: "dim", intent.getStringExtra("paces") ?: "hand-width", intent.getIntExtra("iso", 0), intent.getIntExtra("trace", 0),
+                    intent.getIntExtra("expect", -1)) } }
+            // adb: --es mode bright-reply --ei nonce N [--ez ok true]   (short reply to message N: got it / saw it but could not read it)
+            "bright-reply" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                showBrightReply(intent.getIntExtra("nonce", 0), intent.getBooleanExtra("ok", true)) }
             "send" -> showTorch(Triple(intent.getIntExtra("pattern", 0), intent.getIntExtra("rate", 10).toDouble(),
                 intent.getIntExtra("seconds", 30).toDouble()))
             null -> showSafety()
@@ -877,7 +881,7 @@ class MainActivity : Activity() {
                     if (stopCurrent == null) break
                     k++
                     val r = sender.send(text, mode, savedPass(), p.beaconSec) { st -> runOnUiThread { status?.text = "Send $k of $total: $st" } }
-                    file.append(sender.line(k, r))
+                    file.append(sender.line(k, r) + "# nonce ${r.nonce}\n")
                     runOnUiThread { log?.text = "Last: send $k of $total, ${r.mode.name}, shortest pulse ${r.pminMs} ms, ${"%.1f".format(r.seconds)} s, ${r.failure ?: "ok"}\nSaved in ${file.path}" }
                     if (r.failure == "stopped") break
                     Thread.sleep((p.gapSec * 1000).toLong())
@@ -908,7 +912,25 @@ class MainActivity : Activity() {
         if (plan != null) run(plan)
     }
 
-    private fun showBrightRecv(room0: String, paces0: String, isoFixed: Int, traceSec: Int = 0) {
+    private fun showBrightReply(nonce: Int, ok: Boolean) {
+        onMenu = false
+        val sender = BrightSender(this)
+        stopCurrent = { sender.running = false }
+        val file = LiveFile(this, "bright-reply")
+        var status: TextView? = null
+        scrollPage {
+            text("Short reply", 24f, bold = true)
+            status = text("Replying \"${if (ok) "got it" else "saw it but could not read it"}\" to message $nonce...", 16f, color = Color.rgb(255, 200, 0))
+        }
+        Thread {
+            val (sec, lateUs, failure) = sender.reply(savedPass(), nonce, ok)
+            file.append(Results.header("Short reply, sender") + String.format(Locale.US, "reply,%s,nonce %d,%.1f s,late %.0f us,%s\n",
+                if (ok) "GOT IT" else "COULD NOT READ", nonce, sec, lateUs, failure ?: "ok"))
+            runOnUiThread { status?.text = "Done (${failure ?: "ok"}). Saved: ${file.path}" }
+        }.start()
+    }
+
+    private fun showBrightRecv(room0: String, paces0: String, isoFixed: Int, traceSec: Int = 0, expect: Int = -1) {
         onMenu = false
         val cams = CamSession.backCameras(this)
         if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
@@ -924,7 +946,7 @@ class MainActivity : Activity() {
         val tallyView = pg.info.text("", 13f)
         val exp = 0.0325
         val rx = BrightListener(this, savedPass(), exp)
-        rx.room = room0; rx.paces = paces0; rx.traceSec = traceSec.toDouble()
+        rx.room = room0; rx.paces = paces0; rx.traceSec = traceSec.toDouble(); rx.expect = expect
         val file = LiveFile(this, "bright-recv")
         val c = CamSession(this, cams[0].first, tv) { }
         c.manual = true; c.fps = 30; c.expNs = (exp * 1e9).toLong(); c.iso = if (isoFixed > 0) isoFixed else 400

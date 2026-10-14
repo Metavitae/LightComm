@@ -300,6 +300,36 @@ object BrightFormat {
         val tailFirst = bodyFirst + bodySyms
     }
 
+    // ------------------------------------------------------------ short reply
+
+    /**
+     * Short reply to one message: "got it" or "saw it but could not read it". Dark, then a 63-slot
+     * on/off pattern at 30 per second (about 2.6 s in all). Each pattern comes from the passphrase, the
+     * message's nonce and the kind of reply, so the first phone knows exactly which two to expect, and a
+     * reply to another message (or from a stranger) doesn't match. Of the first 16 candidates, the first one
+     * that is balanced and has no long runs is used (the same choice on both phones).
+     */
+    const val REPLY_SLOTS = 63
+    fun replyPattern(pass: String, nonce: Int, ok: Boolean): IntArray {
+        var fallback: IntArray? = null
+        for (k in 0 until 16) {
+            val ks = MessageFormat.keystream("$pass/reply/$k", nonce * 2 + (if (ok) 1 else 0), 8)
+            val p = IntArray(REPLY_SLOTS) { (ks[it / 8].toInt() shr (7 - it % 8)) and 1 }
+            if (fallback == null) fallback = p
+            val ones = p.sum()
+            var run = 1; var longest = 1
+            for (i in 1 until p.size) { run = if (p[i] == p[i - 1]) run + 1 else 1; longest = maxOf(longest, run) }
+            if (ones in 28..35 && longest <= 5 && p[0] == 1) return p
+        }
+        return fallback!!
+    }
+    fun replyWave(pass: String, nonce: Int, ok: Boolean): Wave {
+        val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }
+        for (b in replyPattern(pass, nonce, ok)) w.add(SLOT, if (b == 1) SLOT else 0.0)
+        repeat(TAIL) { w.add(SLOT, 0.0) }
+        return w
+    }
+
     /** Dark + sync: the same for every send. */
     fun syncWave(): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
 
@@ -413,6 +443,24 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             if ((lo..hi).all { c[it].second <= c[i].second }) peaks.add(c[i])
         }
         return peaks.sortedByDescending { it.second }
+    }
+
+    /**
+     * Look for the short reply to message `nonce` in one picture series between `from` and `to`.
+     * Returns (start time, match, got-it?) for the best match at or above minCorr, or null.
+     */
+    fun findReply(s: Series, from: Double, to: Double, nonce: Int, minCorr: Double = 0.8): Triple<Double, Double, Boolean>? {
+        var best: Triple<Double, Double, Boolean>? = null
+        for (ok in listOf(true, false)) {
+            val w = BrightFormat.replyWave(pass, nonce, ok)
+            var t0 = from
+            while (t0 <= to) {
+                val c = corr(s, t0, w, w.end)
+                if (c >= minCorr && (best == null || c > best.second)) best = Triple(t0, c, ok)
+                t0 += 1.0 / 120
+            }
+        }
+        return best
     }
 
     private fun timing(s: Series, t0Guess: Double): Chan? {

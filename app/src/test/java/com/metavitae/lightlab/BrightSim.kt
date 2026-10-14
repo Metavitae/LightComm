@@ -77,10 +77,25 @@ object BrightSim {
             if (state) sum += max(0.0, b - max(last, a))
             return sum
         }
+        val ss = film(::lightOn, lead, lead + send.wave.end + 1.0, cam, room, r, snrScale)
+        if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
+            println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
+        val dec = BrightDecoder(pass, 0.0325)
+        val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6).take(3)
+        var res: BrightDecoder.Result? = null
+        for ((t0, c) in starts) { val x = dec.decode(ss, t0, c); if (res == null || x.ok) res = x; if (x.ok) break }
+        val bits = send.bodyCoded.size
+        val errs = res?.coded?.takeIf { it.size == bits }?.let { cd -> cd.indices.count { cd[it] != send.bodyCoded[it] } } ?: bits / 2
+        if (verbose) println("  starts=${starts.map { "%.3f/%.2f".format(it.first - lead, it.second) }} -> ${res?.stage} ${res?.text} ch=${res?.channels} snr=${"%.1f".format(res?.snr ?: 0.0)} apart=${res?.levelsApart} pmin=${res?.pminMs} ${res?.note}")
+        return Outcome(res?.ok == true && res.text == text, errs, bits, res?.stage ?: "staircase not found", send.wave.end)
+    }
+
+    /** What the receiving camera records: 12 row bands x 8 column blocks + the whole picture. */
+    fun film(lightOn: (Double, Double) -> Double, lead: Double, end: Double, cam: Cam, room: Room, r: Random, snrScale: Double): List<BrightDecoder.Series> {
         // Receiver: 12 row bands x 8 column blocks; our light falls on a patch of them.
         val nb = 12; val nc = 8
         val exp = realExp
-        val total = lead + send.wave.end + 1.0
+        val total = end
         val phase = r.nextDouble() / cam.fps
         val nFrames = ((total - phase) * cam.fps).toInt()
         val pr = 2 + r.nextInt(6); val pc = 1 + r.nextInt(5)   // patch centre
@@ -113,17 +128,31 @@ object BrightSim {
             }
             series[nb * nc][f] = whole / (nb * nc)
         }
-        if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
-            println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
-        val ss = series.map { BrightDecoder.Series(times, it) }
+        return series.map { BrightDecoder.Series(times, it) }
+    }
+
+    /** A short reply played by `torch`; returns (found?, read as got-it?, match) for the expected nonce, and the best match for a wrong nonce. */
+    fun reply(ok: Boolean, torch: Torch, cam: Cam, room: Room, seed: Int, snrScale: Double = 1.0): Pair<Triple<Boolean, Boolean, Double>, Double> {
+        val r = Random(seed)
+        val pass = "LIGHTCOMM"
+        val nonce = r.nextInt(65536)
+        val lead = 1.0 + r.nextDouble()
+        val effects = ArrayList<Pair<Double, Boolean>>()
+        var free = 0.0
+        val w = BrightFormat.replyWave(pass, nonce, ok)
+        for ((t, on) in BrightFormat.switches(w)) { val st = max(t, free); val d = torch.call(r); effects.add(lead + st + 0.7 * d to on); free = st + d }
+        fun lightOn(a: Double, b: Double): Double {
+            var sum = 0.0; var state = false; var last = 0.0
+            for ((t, on) in effects) { if (t > b) break; if (state) sum += max(0.0, min(t, b) - max(last, a)); state = on; last = t }
+            if (state) sum += max(0.0, b - max(last, a))
+            return sum
+        }
+        val ss = film(::lightOn, lead, lead + w.end + 1.0, cam, room, r, snrScale)
         val dec = BrightDecoder(pass, 0.0325)
-        val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6).take(3)
-        var res: BrightDecoder.Result? = null
-        for ((t0, c) in starts) { val x = dec.decode(ss, t0, c); if (res == null || x.ok) res = x; if (x.ok) break }
-        val bits = send.bodyCoded.size
-        val errs = res?.coded?.takeIf { it.size == bits }?.let { cd -> cd.indices.count { cd[it] != send.bodyCoded[it] } } ?: bits / 2
-        if (verbose) println("  starts=${starts.map { "%.3f/%.2f".format(it.first - lead, it.second) }} -> ${res?.stage} ${res?.text} ch=${res?.channels} snr=${"%.1f".format(res?.snr ?: 0.0)} apart=${res?.levelsApart} pmin=${res?.pminMs} ${res?.note}")
-        return Outcome(res?.ok == true && res.text == text, errs, bits, res?.stage ?: "staircase not found", send.wave.end)
+        val hits = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce) }
+        val best = hits.maxByOrNull { it.second }
+        val wrong = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce xor 0x1234, 0.0) }.maxOfOrNull { it.second } ?: 0.0
+        return Triple(best != null, best?.third == true, best?.second ?: 0.0) to wrong
     }
 
     @JvmStatic fun main(args: Array<String>) {

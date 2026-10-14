@@ -124,6 +124,33 @@ class BrightSender(private val ctx: Context) {
             calls.firstOrNull()?.times(1e6) ?: 0.0, failure ?: if (!ok) "stopped" else null)
     }
 
+    /**
+     * Short reply ("got it" when ok, else "saw it but could not read it") to message `nonce`, right away.
+     * Returns (seconds, switch late mean us, failure or null).
+     */
+    fun reply(pass: String, nonce: Int, ok: Boolean): Triple<Double, Double, String?> {
+        val cm = ctx.getSystemService(CameraManager::class.java)
+        val id = torchCamera(ctx)?.first ?: return Triple(0.0, 0.0, "no flashlight")
+        try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
+        val w = BrightFormat.replyWave(pass, nonce, ok)
+        val late = ArrayList<Double>()
+        var state = false
+        val t0 = System.nanoTime() + 50_000_000
+        running = true
+        for ((t, on) in BrightFormat.switches(w)) {
+            if (!running) break
+            val target = t0 + (t * 1e9).toLong()
+            waitUntil(target)
+            if (on == state) continue
+            val c0 = System.nanoTime()
+            try { cm.setTorchMode(id, on) } catch (e: Exception) { running = false; return Triple(0.0, 0.0, e.message) }
+            late.add((c0 - target) / 1000.0); state = on
+        }
+        try { cm.setTorchMode(id, false) } catch (_: Exception) {}
+        running = false
+        return Triple(w.end, if (late.isEmpty()) 0.0 else late.average(), null)
+    }
+
     /** Line for the sender's results file. */
     fun line(i: Int, s: Sent) = String.format(Locale.US, "%d,%s,%d,%d,%d,%d,%.1f,%.0f,%.0f,%.0f,%.0f,%s,\"%s\"\n",
         i, Build.MODEL, s.mode.id, s.mode.levels, s.mode.perSec, s.pminMs, s.seconds, s.lateUs.mean, s.callUs.mean, s.callUs.pct(0.95), s.firstCallUs,
@@ -157,6 +184,9 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     /** Receiver clock time from which pictures count (set once the sensitivity has settled); 0 = not ready yet. */
     @Volatile var readyAt = 0.0
     private var lastWeakT = -1e9
+    /** Nonce of our own message whose short reply we are waiting for (-1 = none). */
+    @Volatile var expect = -1
+    private var replyFrom = 0.0
     /** Blocks that carried the last send read right (up to 6), searched for the next sync too. */
     private var known: List<Int> = emptyList()
     /** Seconds of raw brightness to record after "ready" (0 = none), for replaying a miss on the computer. */
@@ -236,6 +266,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         val from = maxOf(scanFrom, now - 140)
         if (now - from < syncLen + 1) return emptyList()
         val ws = window(from - 0.1, now)
+        scanReply(syncLen)?.let { return listOf(it) }
         // Find the sync on the whole picture and on the 4 liveliest blocks.
         // Where to look for a sync: the whole picture, the liveliest blocks (people and pets moving are lively too),
         // and the blocks that carried our last read send (a small far light is easy to lose among the lively ones).
@@ -261,6 +292,24 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
         if (r.ok) known = r.blocks.filter { it < NB * NC }.take(6)
         return listOf(logLine(r))
+    }
+
+    /** If a short reply is expected: look for it on the whole picture, the liveliest blocks and the known ones. */
+    private fun scanReply(syncLen: Double): String? {
+        val n = expect
+        if (n < 0) return null
+        val now = newest()
+        val replyLen = BrightFormat.replyWave(pass, n, true).end
+        val from = maxOf(replyFrom, readyAt, now - 30)
+        if (now - from < replyLen + 0.5) return null
+        val ws = window(from - 0.1, now)
+        val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
+        val hits = (listOf(NB * NC) + lively + known).distinct().mapNotNull { dec.findReply(ws[it], from, now - replyLen - 0.2, n) }
+        replyFrom = now - replyLen - 0.2
+        val best = hits.maxByOrNull { it.second } ?: return null
+        expect = -1
+        return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready\n",
+            if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt)
     }
 
     private fun variance(y: DoubleArray): Double { if (y.isEmpty()) return 0.0; val m = y.average(); return y.sumOf { (it - m) * (it - m) } / y.size }
@@ -302,7 +351,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         return String.format(Locale.US, "%s,%s,%s,%d,%d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,%d,%.1f,%d,%d,%.2f,%s,%.1f,%.1f,%d,%.1f,%s,%s,\"%s\"\n",
             SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()), from, to, mode?.id ?: -1, mode?.levels ?: 0, mode?.perSec ?: 0, result,
             bitErr, r.coded?.size ?: 0, symErr, nSym, textSec, sendSec, r.channels, r.snr, r.levelsApart, r.pminMs, r.syncCorr,
-            room, lux, background(), iso, expSec * 1000, paces.replace(",", " "), r.note, r.text.replace("\"", "'"))
+            room, lux, background(), iso, expSec * 1000, paces.replace(",", " "), r.note, r.text.replace("\"", "'")) +
+            (if (r.mode != null) "# nonce ${r.nonce}\n" else "")
     }
 
     fun tallyText(): String = if (tally.isEmpty()) "No sends read yet." else

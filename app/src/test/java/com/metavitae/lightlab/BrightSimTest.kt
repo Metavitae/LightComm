@@ -37,5 +37,14 @@ class BrightSimTest {
         assertTrue(TextPack.pack(long)!!.size * 10 < BrightFormat.utf8(long).size * 6)
     }
 
+    @Test fun short_reply_found_and_not_confused() {
+        for ((torch, cam) in listOf(BrightSim.POCO_TORCH to BrightSim.CAM_8T, BrightSim.T8_TORCH to BrightSim.CAM_POCO)) for (ok in listOf(true, false)) for (seed in 1..3) {
+            val (hit, wrong) = BrightSim.reply(ok, torch, cam, BrightSim.LIT, seed)
+            assertTrue("found ${torch.name} ok=$ok seed=$seed", hit.first)
+            assertEquals("kind ${torch.name} ok=$ok seed=$seed", ok, hit.second)
+            assertTrue("a reply to another message must not match (${"%.2f".format(wrong)})", wrong < 0.7)
+        }
+    }
+
     @Test fun print_grid() { BrightSim.main(arrayOf("1")) }
 }
