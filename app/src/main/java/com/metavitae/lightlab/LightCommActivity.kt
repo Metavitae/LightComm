@@ -23,7 +23,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
  */
 class LightCommActivity : Activity() {
     private lateinit var web: WebView
-    /** A small camera preview behind the screens (Oct 14: the POCO gave black pictures with no preview at all; Light Lab, which shows one, saw fine). */
+    /**
+     * The live camera picture behind the Chat and Listen screens (founder, Oct 14: aim while chatting). It also fixes
+     * the POCO, which gave black pictures with no preview at all (Light Lab, which shows one, saw fine).
+     */
     private lateinit var preview: android.view.TextureView
     private var talk: Talk? = null
     private var talkKey = ""
@@ -66,7 +69,11 @@ class LightCommActivity : Activity() {
         }
         preview = android.view.TextureView(this)
         val root = android.widget.FrameLayout(this)
-        root.addView(preview, android.widget.FrameLayout.LayoutParams((160 * resources.displayMetrics.density).toInt(), (120 * resources.displayMetrics.density).toInt()))
+        // True shape (the camera gives 4:3 pictures; held upright that is 3 wide by 4 high), full width, at the top.
+        val wPx = resources.displayMetrics.widthPixels
+        root.addView(preview, android.widget.FrameLayout.LayoutParams(wPx, wPx * 4 / 3))
+        preview.alpha = 0.7f
+        web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         root.addView(web, android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
         setContentView(root)
         tone = try { ToneGenerator(AudioManager.STREAM_MUSIC, 100) } catch (_: Exception) { null }
@@ -138,6 +145,8 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
         @JavascriptInterface fun setSounds(s: String) { sounds = s }
+        /** Camera picture behind the chat: shown, or dimmed to nothing (the camera keeps listening either way). */
+        @JavascriptInterface fun cameraBehind(on: Boolean) = runOnUiThread { preview.alpha = if (on) 0.7f else 0.01f }
         @JavascriptInterface fun brightness(level: Float) = runOnUiThread {
             window.attributes = window.attributes.apply { screenBrightness = level.coerceIn(0.02f, 1f) }
         }

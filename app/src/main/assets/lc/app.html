@@ -14,16 +14,19 @@
 @font-face{font-family:"Jost";font-weight:800;src:url(jost-800.ttf)}
 @font-face{font-family:"JetBrains Mono";font-weight:400;src:url(jetbrains-400.ttf)}
 @font-face{font-family:"JetBrains Mono";font-weight:500;src:url(jetbrains-500.ttf)}
-:root{--bg:#070204;--panel:#12060a;--panel2:#1b0a0f;--line:#4a1b1e;--dim:#ee6a55;--ink:#ff5a45;--hi:#ff9477;--on:#070204}
-:root[data-mode="green"]{--bg:#020805;--panel:#06130c;--panel2:#0a1e13;--line:#1a4a30;--dim:#35b36f;--ink:#4dff9a;--hi:#a6ffcf;--on:#020805}
-:root[data-mode="normal"]{--bg:#0b0b0c;--panel:#161617;--panel2:#202022;--line:#3d3d41;--dim:#d2d2d6;--ink:#f1f1f3;--hi:#ffffff;--on:#0b0b0c}
+:root{--veil:rgba(7,2,4,.62);--bg:#070204;--panel:#12060a;--panel2:#1b0a0f;--line:#4a1b1e;--dim:#ee6a55;--ink:#ff5a45;--hi:#ff9477;--on:#070204}
+:root[data-mode="green"]{--veil:rgba(2,8,5,.62);--bg:#020805;--panel:#06130c;--panel2:#0a1e13;--line:#1a4a30;--dim:#35b36f;--ink:#4dff9a;--hi:#a6ffcf;--on:#020805}
+:root[data-mode="normal"]{--veil:rgba(11,11,12,.62);--bg:#0b0b0c;--panel:#161617;--panel2:#202022;--line:#3d3d41;--dim:#d2d2d6;--ink:#f1f1f3;--hi:#ffffff;--on:#0b0b0c}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:"Jost",system-ui,sans-serif;overflow:hidden}
+html,body{margin:0;height:100%;background:transparent;color:var(--ink);font-family:"Jost",system-ui,sans-serif;overflow:hidden}
 button,input{font:inherit;color:inherit}
 button{cursor:pointer}
 .mono{font-family:"JetBrains Mono",monospace}
 .view{position:fixed;inset:0;display:none;flex-direction:column;background:var(--bg)}
 .view.on{display:flex}
+/* Chat and Listen: the live camera picture shows through, darkened (aim while chatting) */
+#vChat,#vListen{background:var(--veil)}
+#vChat .top{background:var(--bg)}
 .cap{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.1em;color:var(--dim)}
 .pill{height:44px;padding:0 16px;border:1px solid var(--line);background:var(--panel);border-radius:999px;font-weight:500;font-size:16px;white-space:nowrap}
 .bigbtn{flex:1;height:56px;border-radius:16px;font-weight:800;font-size:17px;display:flex;align-items:center;justify-content:center;gap:10px}
@@ -183,6 +186,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
     <div><div class="cap">SOUNDS (ONLY FOR THIS PHONE'S OWN EVENTS)</div><div class="seg" style="margin-top:8px">
       <button data-s="on" onclick="setSounds('on')">On</button><button data-s="vibrate" onclick="setSounds('vibrate')">Vibrate</button><button data-s="off" onclick="setSounds('off')">Off</button></div></div>
+    <div><div class="cap">CAMERA BEHIND CHAT (AIM WHILE CHATTING)</div><div class="seg" style="margin-top:8px">
+      <button id="camOn" onclick="setCam(true)">On</button><button id="camOff" onclick="setCam(false)">Off</button></div></div>
     <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
     <div><div class="cap">TEST · AUTO-ANSWER</div>
       <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "COPY: …".</div>
@@ -194,7 +199,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 
 <script>
 const $ = id => document.getElementById(id);
-const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, setSounds(){}, poll:()=>'{"events":[],"phase":"idle"}' };
+const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, setSounds(){}, cameraBehind(){}, poll:()=>'{"events":[],"phase":"idle"}' };
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
                 set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
@@ -212,15 +217,17 @@ window.goBack = goBack;
 // ---------- look ----------
 function setMode(m){ document.documentElement.dataset.mode = m; store.set('lc.mode', m); drawSettings() }
 function setNight(v){ store.set('lc.night', +v); LC.brightness(v / 100); $('nightPct').textContent = v + '%'; $('nightLbl').textContent = 'NIGHT ' + v + '%' }
+function setCam(on){ store.set('lc.cam', on); LC.cameraBehind(on); drawSettings() }
 function setSounds(s){ store.set('lc.sounds', s); LC.setSounds(s); LC.log('sounds ' + s); drawSettings() }
 function setAuto(on){ auto = on; store.set('lc.auto', on); LC.log('auto-answer ' + (on ? 'on' : 'off')); drawSettings() }
 function drawSettings(){ const m = store.get('lc.mode', 'red');
   document.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('sel', b.dataset.m === m));
   document.querySelectorAll('[data-s]').forEach(b => b.classList.toggle('sel', b.dataset.s === store.get('lc.sounds', 'on')));
+  $('camOn').classList.toggle('sel', store.get('lc.cam', true)); $('camOff').classList.toggle('sel', !store.get('lc.cam', true));
   $('autoOn').classList.toggle('sel', auto); $('autoOff').classList.toggle('sel', !auto);
   $('night').value = store.get('lc.night', 40); $('nightPct').textContent = $('night').value + '%';
   $('keyShow').textContent = cur ? cur.key : 'open a chat first' }
-setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
+setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); LC.cameraBehind(store.get('lc.cam', true)); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
 
 // ---------- chats ----------
 function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;
