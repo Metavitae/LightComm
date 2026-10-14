@@ -206,15 +206,15 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         const val FY = 24
         /** How many of the most flickering fine squares are searched and read, besides the known ones. */
         const val FINE_PICK = 8
-        const val MIN_EXP = 0.008
+        const val MIN_EXP = 0.016
 
         /**
          * Camera setting from what it sees now (Oct 14, sun glare on a door turned parts of the picture white:
          * a white spot can't show our blinks). Aim: background around 40 of 255 and the brightest spots under
          * about 170. Sensitivity first (ISO 100-1600 at a full 1/30 s picture); below ISO 100 the picture gets
-         * shorter instead, down to 8 ms. SIMULATED: 8 ms and longer read 24 of 24; at 4 ms and shorter the POCO's
-         * flashlight failed every time (its switch times vary by several ms and a short picture catches the light
-         * mid-switch; a long picture averages that out). Direct sun glare may need shorter still: not solved.
+         * shorter instead, down to 16 ms. SIMULATED, POCO flashlight, 36 sends each: 32.5 ms 36/36, 16 ms 35/36,
+         * 12 ms 25/36, 8 ms 31/36, 4 ms and shorter half or worse (its switch times vary by several ms; a short
+         * picture catches the light mid-switch, a long one averages that out). Direct sun glare: not solved, shade helps.
          * Returns (iso, exposure s).
          */
         fun settle(bg: Double, top: Double, iso: Int, expSec: Double): Pair<Int, Double> {

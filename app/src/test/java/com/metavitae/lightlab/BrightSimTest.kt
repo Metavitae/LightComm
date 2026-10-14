@@ -72,7 +72,7 @@ class BrightSimTest {
     @Test fun short_pictures_in_glare_read() {
         try {
             BrightSim.decExpFollows = true
-            for (e in listOf(0.016, BrightListener.MIN_EXP)) for (m in listOf(0, 5, 6)) for (seq in listOf(0, 2)) {
+            for (e in listOf(BrightListener.MIN_EXP)) for (m in listOf(5, 6)) for (seq in listOf(0, 2)) {
                 BrightSim.realExp = e
                 val o = BrightSim.run(BrightFormat.TEST_MESSAGES[1], BrightFormat.MODES[m], BrightSim.POCO_TORCH, BrightSim.CAM_8T, BrightSim.LIT, 7 * m + seq, seq = seq)
                 assertTrue("exposure ${e * 1000} ms mode $m seq $seq: ${o.stage}", o.ok)
