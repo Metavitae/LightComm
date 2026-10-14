@@ -1172,6 +1172,9 @@ class MainActivity : Activity() {
             talk.enqueue(txt)
         }
         var aimCalls = 0
+        // Auto-answer (founder alone with both phones): the phone left behind answers every message it reads
+        // with "COPY: <text>", so the person far away gets written replies too. Never answers a COPY (no loops).
+        var autoAnswer = false
         talk.watchFind = true
         talk.events = object : Talk.Events {
             override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) = runOnUiThread {
@@ -1193,7 +1196,10 @@ class MainActivity : Activity() {
                 val bars = when { r.snr >= 20 -> "▮▮▮▮▮"; r.snr >= 12 -> "▮▮▮▮▯"; r.snr >= 7 -> "▮▮▮▯▯"; r.snr >= 4 -> "▮▮▯▯▯"; else -> "▮▯▯▯▯" }
                 meter.text = "Signal $bars · zones ${zones.size} of 96 + $fine fine · ${java.text.SimpleDateFormat("HH:mm", Locale.US).format(java.util.Date())}" +
                     if (r.snr < 7) " · weak: move closer or change the light" else ""
-                if (r.ok && !dup) { addLine("← ${r.text}", RED, 22f); tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400) }
+                if (r.ok && !dup) {
+                    addLine("← ${r.text}", RED, 22f); tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
+                    if (autoAnswer && !r.text.startsWith("COPY")) send("COPY: ${r.text.take(40)}")
+                }
                 else if (!r.ok) addLine("← (saw a message, could not read it: asked again)", DIM, 14f)
             }
             override fun aim(score: Double) {
@@ -1213,7 +1219,14 @@ class MainActivity : Activity() {
         r3.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.2f))
         r3.btn("Send") { send(input.text.toString()); input.setText("") }
         val r4 = row()
-        r4.btn("Find (blink 30 s)") { talk.findSec = 30; state.text = "Find: blinking 30 s..."; addLine("· blinking Find for 30 s", DIM, 14f) }
+        r4.btn("Find 30 s") { talk.findSec = 30; state.text = "Find: blinking 30 s..."; addLine("· blinking Find for 30 s", DIM, 14f) }
+        var autoBtn: android.widget.Button? = null
+        autoBtn = r4.btn("Auto-answer: off") {
+            autoAnswer = !autoAnswer
+            autoBtn?.text = if (autoAnswer) "Auto-answer: ON" else "Auto-answer: off"
+            autoBtn?.setBackgroundColor(if (autoAnswer) Color.rgb(90, 15, 10) else Color.rgb(30, 6, 4))
+            file.append("# auto-answer ${if (autoAnswer) "on" else "off"}\n")
+        }
         r4.btn("Stop") { leave(); showMenu() }
         setContentView(root)
         stopCurrent = {
