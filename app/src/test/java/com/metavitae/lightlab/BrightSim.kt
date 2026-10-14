@@ -41,6 +41,7 @@ object BrightSim {
     @JvmField var patchWidth = 3.0      // how wide our light's glow is, in blocks
     @JvmField var ppm = 0.0             // sender clock faster than the receiver's, parts per million
     @JvmField var personAt = -1.0       // seconds into the send when someone walks past (-1 = nobody)
+    @JvmField var decExpFollows = false // the reader is told the real exposure (glare setting, Oct 14)
 
     data class Outcome(val ok: Boolean, val bitErrors: Int, val bits: Int, val stage: String, val seconds: Double)
 
@@ -82,7 +83,7 @@ object BrightSim {
         val ss = film(::lightOn, lead, lead + send.wave.end + 1.0, cam, room, r, snrScale)
         if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
             println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
-        val dec = BrightDecoder(pass, 0.0325)
+        val dec = BrightDecoder(pass, if (decExpFollows) realExp else 0.0325)
         val starts = dec.findStarts(ss.last(), 0.0, lead + 1.0, 0.6, short = link != null).take(3)
         var res: BrightDecoder.Result? = null
         for ((t0, c) in starts) { val x = dec.decode(ss, t0, c, link); if (res == null || x.ok) res = x; if (x.ok) break }

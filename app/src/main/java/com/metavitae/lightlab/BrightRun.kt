@@ -193,7 +193,10 @@ class BrightSender(private val ctx: Context) {
  * blocks (+ the whole picture), looks for sends every 2 seconds, reads them and writes
  * one line per send with all the conditions.
  */
-class BrightListener(private val ctx: Context, private val pass: String, val expSec: Double) {
+class BrightListener(private val ctx: Context, private val pass: String, exp0: Double) {
+    /** How long each picture is exposed (s). Shorter in glare (see `settle`); the reader's light model follows it. */
+    @Volatile var expSec: Double = exp0
+        set(v) { field = v; dec = BrightDecoder(pass, v) }
     companion object {
         const val NB = 12
         const val NC = 8
@@ -203,6 +206,26 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         const val FY = 24
         /** How many of the most flickering fine squares are searched and read, besides the known ones. */
         const val FINE_PICK = 8
+        const val MIN_EXP = 0.008
+
+        /**
+         * Camera setting from what it sees now (Oct 14, sun glare on a door turned parts of the picture white:
+         * a white spot can't show our blinks). Aim: background around 40 of 255 and the brightest spots under
+         * about 170. Sensitivity first (ISO 100-1600 at a full 1/30 s picture); below ISO 100 the picture gets
+         * shorter instead, down to 8 ms. SIMULATED: 8 ms and longer read 24 of 24; at 4 ms and shorter the POCO's
+         * flashlight failed every time (its switch times vary by several ms and a short picture catches the light
+         * mid-switch; a long picture averages that out). Direct sun glare may need shorter still: not solved.
+         * Returns (iso, exposure s).
+         */
+        fun settle(bg: Double, top: Double, iso: Int, expSec: Double): Pair<Int, Double> {
+            var g = if (bg > 0.5) 40.0 / bg else 1.0
+            if (top > 1) g = minOf(g, 170.0 / top)
+            if (top >= 250) g = minOf(g, 0.35)     // white: we can't tell how far over, so step well down
+            val total = iso * expSec * g             // ISO x seconds
+            val full = 0.0325
+            return if (total / full >= 100) (total / full).toInt().coerceIn(100, 1600) to full
+                   else 100 to (total / 100).coerceIn(MIN_EXP, full)
+        }
         const val CAP = 30 * 150
         const val HEAD = "time,from_phone,to_phone,mode,levels,per_sec,result,bit_errors_before_repair,coded_bits,symbol_errors,symbols," +
             "text_seconds,send_seconds,channels,signal_to_noise,levels_apart,shortest_pulse_ms,sync_match,room,lux,background,iso,exposure_ms,paces,note,text\n"
@@ -285,6 +308,14 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         }
     }
 
+    /** Brightness of the brightest fine squares lately (98th percentile of each square's highest value over 10 pictures). */
+    fun brightTop(): Double = synchronized(lock) {
+        if (count < 10) return 0.0
+        val mx = DoubleArray(FX * FY)
+        for (j in 1..10) { val v = fineVals[((count - j) % CAP).toInt()]; for (z in mx.indices) mx[z] = maxOf(mx[z], v[z] / 100.0) }
+        mx.sort(); mx[(mx.size * 0.98).toInt()]
+    }
+
     /** Whole-picture brightness lately (to report the room). */
     fun background(): Double = synchronized(lock) {
         if (count == 0L) return 0.0
@@ -346,7 +377,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
 
     fun newest(): Double = synchronized(lock) { if (count == 0L) 0.0 else times[((count - 1) % CAP).toInt()] }
 
-    private val dec = BrightDecoder(pass, expSec)
+    private var dec = BrightDecoder(pass, exp0)
 
     /** Look for new sends and read the ones that are complete. Returns lines to log. */
     fun scan(): List<String> {

@@ -46,7 +46,7 @@ class Talk(
         val turns: Boolean = false, val first: Boolean = true, val idle: Double = 45.0,
     )
 
-    private val exp = 0.0325
+    private var exp = 0.0325
     val rx = BrightListener(act, pass, exp)
     private val sender = BrightSender(act)
     @Volatile var alive = true
@@ -84,13 +84,17 @@ class Talk(
         c.open {}
         while (alive && rx.newest() == before && now() - t0 < 5) Thread.sleep(20)
         if (!isoSet) {
-            // First time only: automatic sensitivity, aiming for a background around 40 of 255.
+            // First time only: automatic setting (twice: glare that is white the first time is measured again).
             Thread.sleep(2000)
-            val bg = rx.background()
-            if (bg > 0.5) { iso = (iso * 40.0 / bg).toInt().coerceIn(100, 1600); c.iso = iso; c.apply() }
-            log("# automatic ISO: background was ${f1(bg)} at ISO 400, now ISO $iso\n")
+            repeat(2) {
+                val bg = rx.background(); val top = rx.brightTop()
+                val (i2, e2) = BrightListener.settle(bg, top, iso, exp)
+                log(String.format(java.util.Locale.US, "# automatic camera: background %.1f, brightest spots %.0f at ISO %d, %.1f ms -> ISO %d, %.1f ms\n", bg, top, iso, exp * 1000, i2, e2 * 1000))
+                iso = i2; exp = e2; c.iso = iso; c.expNs = (exp * 1e9).toLong(); rx.expSec = exp; c.apply()
+                Thread.sleep(900)
+            }
             isoSet = true
-            Thread.sleep(1500)
+            Thread.sleep(600)
         } else Thread.sleep(500)
         rx.iso = iso
         rx.readyAt = rx.newest()
@@ -124,7 +128,7 @@ class Talk(
         while (!tv.isAvailable && alive) Thread.sleep(50)
         show("Starting camera...")
         openCam()
-        log("# ready: listening, background ${f1(rx.background())}, ISO $iso\n")
+        log("# ready: listening, background ${f1(rx.background())}, brightest spots ${f1(rx.brightTop())}, ISO $iso, picture ${f1(exp * 1000)} ms\n")
         scanner.scheduleWithFixedDelay({
             if (rx.readyAt > 0) {
                 val lines = try { rx.scan() } catch (e: Exception) { listOf("# scan problem: ${e.message}\n") }

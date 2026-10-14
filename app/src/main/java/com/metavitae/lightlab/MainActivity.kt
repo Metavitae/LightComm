@@ -1077,12 +1077,16 @@ class MainActivity : Activity() {
         file.append(Results.header("Aiming, listener") + "Pattern: 31 steps at $rate per second (period ${"%.2f".format(period)} s)\ntime,match,on_fine_square\n")
         pg.bar.barButton("Stop") { leave(); showMenu() }
         stopCurrent = { alive = false; c.close(); worker.shutdown(); tone?.release() }
-        // Automatic sensitivity once (as the receiver does), then score every half second.
+        // Automatic camera setting (twice, for glare), then score every 0.35 s.
+        fun settleOnce() {
+            val (i2, e2) = BrightListener.settle(rx.background(), rx.brightTop(), c.iso, rx.expSec)
+            file.append(String.format(Locale.US, "# automatic camera: background %.1f, brightest spots %.0f -> ISO %d, %.1f ms\n", rx.background(), rx.brightTop(), i2, e2 * 1000))
+            c.iso = i2; c.expNs = (e2 * 1e9).toLong(); rx.expSec = e2; c.apply()
+        }
         tv.postDelayed({
             if (!alive) return@postDelayed
-            val bg = rx.background()
-            if (bg > 0.5) { c.iso = (c.iso * 40.0 / bg).toInt().coerceIn(100, 1600); c.apply() }
-            tv.postDelayed({ if (alive) rx.readyAt = rx.newest() }, 1000)
+            settleOnce()
+            tv.postDelayed({ if (alive) { settleOnce(); tv.postDelayed({ if (alive) rx.readyAt = rx.newest() }, 900) } }, 900)
         }, 2000)
         var lastBeep = 0L
         val tick = object : Runnable {
