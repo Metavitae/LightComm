@@ -34,7 +34,7 @@ for i in $(seq 1 1200); do
   sleep 2; lines "$A" "$FA" | grep -q '^# DONE' && lines "$B" "$FB" | grep -q '^# DONE' && break
 done
 echo "  whole chat: $(( $(date +%s) - T0 )) s"
-for p in "$A:$FA:$AN" "$B:$FB:$BN"; do IFS=: read s f n <<<"$p"
+for p in "$A|$FA|$AN" "$B|$FB|$BN"; do IFS='|' read -r s f n <<<"$p"   # serials hold ":" (ip:port)
   lines "$s" "$f" | grep -E '^SEND|^# (DONE|link|auto|nothing)|^# replied|^[0-9]+:[0-9]+:[0-9]+,' | cut -c1-170 | sed "s/^/  $n: /"; done
 for s in "$A" "$B"; do adb -s "$s" shell input keyevent KEYCODE_BACK; done
 mkdir -p results; adb -s "$A" pull -q "$FA" results/; adb -s "$B" pull -q "$FB" results/
