@@ -135,14 +135,14 @@ object BrightSim {
     }
 
     /** A short reply played by `torch`; returns (found?, read as got-it?, match) for the expected nonce, and the best match for a wrong nonce. */
-    fun reply(ok: Boolean, torch: Torch, cam: Cam, room: Room, seed: Int, snrScale: Double = 1.0): Pair<Triple<Boolean, Boolean, Double>, Double> {
+    fun reply(ok: Boolean, torch: Torch, cam: Cam, room: Room, seed: Int, snrScale: Double = 1.0, perSec: Int = 30): Pair<Triple<Boolean, Boolean, Double>, Double> {
         val r = Random(seed)
         val pass = "LIGHTCOMM"
         val nonce = r.nextInt(65536)
         val lead = 1.0 + r.nextDouble()
         val effects = ArrayList<Pair<Double, Boolean>>()
         var free = 0.0
-        val w = BrightFormat.replyWave(pass, nonce, ok)
+        val w = BrightFormat.replyWave(pass, nonce, ok, perSec)
         for ((t, on) in BrightFormat.switches(w)) { val st = max(t, free); val d = torch.call(r); effects.add(lead + st + 0.7 * d to on); free = st + d }
         fun lightOn(a: Double, b: Double): Double {
             var sum = 0.0; var state = false; var last = 0.0
@@ -152,9 +152,9 @@ object BrightSim {
         }
         val ss = film(::lightOn, lead, lead + w.end + 1.0, cam, room, r, snrScale)
         val dec = BrightDecoder(pass, 0.0325)
-        val hits = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce) }
+        val hits = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce, perSec = perSec) }
         val best = hits.maxByOrNull { it.second }
-        val wrong = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce xor 0x1234, 0.0) }.maxOfOrNull { it.second } ?: 0.0
+        val wrong = ss.mapNotNull { dec.findReply(it, 0.0, lead + 1.0, nonce xor 0x1234, 0.0, perSec) }.maxOfOrNull { it.second } ?: 0.0
         return Triple(best != null, best?.third == true, best?.second ?: 0.0) to wrong
     }
 

@@ -38,8 +38,8 @@ class BrightSimTest {
     }
 
     @Test fun short_reply_found_and_not_confused() {
-        for ((torch, cam) in listOf(BrightSim.POCO_TORCH to BrightSim.CAM_8T, BrightSim.T8_TORCH to BrightSim.CAM_POCO)) for (ok in listOf(true, false)) for (seed in 1..3) {
-            val (hit, wrong) = BrightSim.reply(ok, torch, cam, BrightSim.LIT, seed)
+        for ((torch, cam) in listOf(BrightSim.POCO_TORCH to BrightSim.CAM_8T, BrightSim.T8_TORCH to BrightSim.CAM_POCO)) for (ok in listOf(true, false)) for (seed in 1..3) for (rate in listOf(30, 15, 10)) {
+            val (hit, wrong) = BrightSim.reply(ok, torch, cam, BrightSim.LIT, seed, perSec = rate)
             assertTrue("found ${torch.name} ok=$ok seed=$seed", hit.first)
             assertEquals("kind ${torch.name} ok=$ok seed=$seed", ok, hit.second)
             assertTrue("a reply to another message must not match (${"%.2f".format(wrong)})", wrong < 0.7)

@@ -62,7 +62,7 @@ class MainActivity : Activity() {
                     intent.getIntExtra("expect", -1)) } }
             // adb: --es mode bright-reply --ei nonce N [--ez ok true]   (short reply to message N: got it / saw it but could not read it)
             "bright-reply" -> { intent.getStringExtra("pass")?.let { savePass(it) }
-                showBrightReply(intent.getIntExtra("nonce", 0), intent.getBooleanExtra("ok", true)) }
+                showBrightReply(intent.getIntExtra("nonce", 0), intent.getBooleanExtra("ok", true), intent.getIntExtra("rate", 30)) }
             // adb: --es mode talk [--es send "A|B|C" (texts to send; none = only listen and reply)] [--ei speed 5] [--ez auto true] [--ez short true]
             //      [--ei after 2000 (ms from a message's end to the reply)] [--ei wait 12 (s for a reply)] [--ei tries 4] [--ei gap 2] [--ei start 0]
             //      [--es expect "A|B|C" (texts the other phone sends, to count errors)] [--ei iso 0] [--es room lit] [--es paces 6m] [--es pass W]
@@ -924,7 +924,7 @@ class MainActivity : Activity() {
         if (plan != null) run(plan)
     }
 
-    private fun showBrightReply(nonce: Int, ok: Boolean) {
+    private fun showBrightReply(nonce: Int, ok: Boolean, rate: Int = 30) {
         onMenu = false
         val sender = BrightSender(this)
         stopCurrent = { sender.running = false }
@@ -935,7 +935,7 @@ class MainActivity : Activity() {
             status = text("Replying \"${if (ok) "got it" else "saw it but could not read it"}\" to message $nonce...", 16f, color = Color.rgb(255, 200, 0))
         }
         Thread {
-            val (sec, lateUs, failure) = sender.reply(savedPass(), nonce, ok)
+            val (sec, lateUs, failure) = sender.reply(savedPass(), nonce, ok, rate)
             file.append(Results.header("Short reply, sender") + String.format(Locale.US, "reply,%s,nonce %d,%.1f s,late %.0f us,%s\n",
                 if (ok) "GOT IT" else "COULD NOT READ", nonce, sec, lateUs, failure ?: "ok"))
             runOnUiThread { status?.text = "Done (${failure ?: "ok"}). Saved: ${file.path}" }

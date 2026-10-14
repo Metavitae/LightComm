@@ -171,7 +171,7 @@ class Talk(
         val wait = ended + o.replyAfter - now()
         if (wait > 0) Thread.sleep((wait * 1000).toLong())
         val startedAfter = now() - ended
-        val (sec, lateUs, fail) = sender.reply(pass, r.nonce, r.ok)
+        val (sec, lateUs, fail) = sender.reply(pass, r.nonce, r.ok, r.mode.perSec)
         log(String.format(Locale.US, "# replied %s to nonce %d%s%s: noticed %.1f s after it ended, reply started %.1f s after, took %.1f s, late %.0f us, %s\n",
             if (r.ok) "GOT IT" else "COULD NOT READ", r.nonce, if (r.seq > 0) " (short opening #${r.seq})" else "", if (dup) " (again: seen before)" else "",
             noticed, startedAfter, sec, lateUs, fail ?: "ok"))
@@ -195,6 +195,7 @@ class Talk(
             val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce) { }
             val sendEnd = now()
             if (!useShort) fullNonce = s.nonce
+            rx.expectRate = mode.perSec
             rx.expect = s.nonce
             val listenAfter = openCam()
             var got: Boolean? = null; var seenAfter = 0.0

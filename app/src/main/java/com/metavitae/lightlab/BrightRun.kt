@@ -135,11 +135,11 @@ class BrightSender(private val ctx: Context) {
      * Short reply ("got it" when ok, else "saw it but could not read it") to message `nonce`, right away.
      * Returns (seconds, switch late mean us, failure or null).
      */
-    fun reply(pass: String, nonce: Int, ok: Boolean): Triple<Double, Double, String?> {
+    fun reply(pass: String, nonce: Int, ok: Boolean, perSec: Int = 30): Triple<Double, Double, String?> {
         val cm = ctx.getSystemService(CameraManager::class.java)
         val id = torchCamera(ctx)?.first ?: return Triple(0.0, 0.0, "no flashlight")
         try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
-        val w = BrightFormat.replyWave(pass, nonce, ok)
+        val w = BrightFormat.replyWave(pass, nonce, ok, perSec)
         val late = ArrayList<Double>()
         var state = false
         val t0 = System.nanoTime() + 50_000_000
@@ -195,6 +195,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     private var lastWeakT = -1e9
     /** Nonce of our own message whose short reply we are waiting for (-1 = none). */
     @Volatile var expect = -1
+    /** Speed of the expected reply (the speed our message went at). */
+    @Volatile var expectRate = 30
     private var replyFrom = 0.0
     /** Blocks that carried the last send read right (up to 6), searched for the next sync too. */
     private var known: List<Int> = emptyList()
@@ -330,13 +332,14 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         val n = expect
         if (n < 0) return null
         val now = newest()
-        val replyLen = BrightFormat.replyWave(pass, n, true).end
+        val rate = expectRate
+        val replyLen = BrightFormat.replyWave(pass, n, true, rate).end
         // Half a second before "ready" too: the reply's dark start may come while the camera settles.
         val from = maxOf(replyFrom, readyAt - 0.5, now - 30)
         if (now - from < replyLen + 0.5) return null
         val ws = window(from - 0.1, now)
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
-        val hits = (listOf(NB * NC) + lively + known).distinct().mapNotNull { dec.findReply(ws[it], from, now - replyLen - 0.2, n) }
+        val hits = (listOf(NB * NC) + lively + known).distinct().mapNotNull { dec.findReply(ws[it], from, now - replyLen - 0.2, n, perSec = rate) }
         replyFrom = now - replyLen - 0.2
         val best = hits.maxByOrNull { it.second } ?: return null
         expect = -1
