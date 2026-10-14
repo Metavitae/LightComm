@@ -26,5 +26,16 @@ class BrightSimTest {
         }
     }
 
+    @Test fun packed_text_round_trip_and_shorter() {
+        val samples = BrightFormat.TEST_MESSAGES + listOf("Hola, ¿cómo estás? Ñandú ÁRBOL", "hola amigo", "SOS 911", "café ☕ 🙂", "a", "")
+        for (t in samples) {
+            val p = TextPack.pack(t)
+            if (p != null) { assertEquals(t, TextPack.unpack(p)); assertTrue(p.size < BrightFormat.utf8(t).size) }
+        }
+        // The long test message must get clearly shorter.
+        val long = BrightFormat.TEST_MESSAGES[2]
+        assertTrue(TextPack.pack(long)!!.size * 10 < BrightFormat.utf8(long).size * 6)
+    }
+
     @Test fun print_grid() { BrightSim.main(arrayOf("1")) }
 }

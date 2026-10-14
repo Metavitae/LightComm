@@ -23,8 +23,8 @@ import kotlin.math.sqrt
  *   staircase (each level held 3 symbols, low to high) | text, with a pilot mini-staircase
  *   after every 32 symbols | dark tail.
  * Start mark and header are on/off only, at the text's speed (30, 15 or 10 symbols per second).
- * Header: stamp 16 | nonce 16 | mode 4 | phone tag 4 | shortest pulse (ms) 4 | length 8 | header check byte 8 (Hamming 7/4, interleaved).
- * Text: UTF-8 bytes + 16-bit check (CRC-16), scrambled with the passphrase, Hamming 7/4, interleaved.
+ * Header: stamp 16 | nonce 16 | mode 4 (top bit = packed text) | phone tag 4 | shortest pulse (ms) 4 | length 8 | header check byte 8 (Hamming 7/4, interleaved).
+ * Text: packed (TextPack, when shorter) or UTF-8 bytes + 16-bit check (CRC-16), scrambled with the passphrase, Hamming 7/4, interleaved.
  */
 object BrightFormat {
     const val SLOT = 1.0 / 30
@@ -142,11 +142,11 @@ object BrightFormat {
     fun interleave(coded: IntArray): IntArray { val n = coded.size / 7; return IntArray(coded.size) { k -> coded[(k % n) * 7 + k / n] } }
     fun deinterleave(sent: IntArray): IntArray { val n = sent.size / 7; val out = IntArray(sent.size); for (k in sent.indices) out[(k % n) * 7 + k / n] = sent[k]; return out }
 
-    fun headerBits(pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int, len: Int): IntArray {
+    fun headerBits(pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int, len: Int, packed: Boolean = false): IntArray {
         val b = ArrayList<Int>()
         bitsOf(MessageFormat.tag(pass, nonce), 16, b)
         bitsOf(nonce, 16, b)
-        bitsOf(mode.id, 4, b)
+        bitsOf(mode.id or (if (packed) 8 else 0), 4, b)
         bitsOf(tag, 4, b)
         bitsOf(pminMs, 4, b)
         bitsOf(len xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff), 8, b)
@@ -315,12 +315,13 @@ object BrightFormat {
 
     /** The whole send. pminMs = the sender's shortest pulse, measured while the sync played. */
     fun build(text: String, pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int): Send {
-        val data = utf8(text)
+        val packed = TextPack.pack(text)?.takeIf { it.size <= MAX_BYTES }
+        val data = packed ?: utf8(text)
         val lay = Layout(mode, data.size)
         val w = syncWave()
         val ts = mode.symSec
         val pmin = pminMs / 1000.0
-        for (b in BARKER + headerBits(pass, nonce, mode, tag, pminMs, data.size)) w.add(ts, if (b == 1) ts else 0.0)
+        for (b in BARKER + headerBits(pass, nonce, mode, tag, pminMs, data.size, packed != null)) w.add(ts, if (b == 1) ts else 0.0)
         for (l in trainSymbols(mode)) w.add(ts, mode.onSec(l, pmin))
         val coded = bodyBits(data, pass, nonce)
         val (body, _) = withPilots(bitsToSymbols(coded, mode), mode)
@@ -363,6 +364,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         val symbolsChecked: Int = 0, val pilotErrors: Int = 0,
         /** Which of the given series carried the send (for the receiver to keep watching those spots). */
         val blocks: List<Int> = emptyList(),
+        /** Text was sent packed (TextPack). */
+        val packed: Boolean = false,
     )
 
     /** Per-channel timing and brightness curve. */
@@ -643,7 +646,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         if (hdr == null) return Result(false, "header not read (or another passphrase)", t0 = t0, channels = chans.size, syncCorr = syncCorr,
             snr = best0.swing / best0.sigma)
         val nonce = bitsInt(hdr, 16, 16)
-        val modeId = bitsInt(hdr, 32, 4)
+        val modeId = bitsInt(hdr, 33, 3)
+        val packed = bitsInt(hdr, 32, 1) == 1
         val tag = bitsInt(hdr, 36, 4)
         val pminMs = bitsInt(hdr, 40, 4)
         val len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
@@ -677,7 +681,10 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                                  BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
                 val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
                 val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
-                if (crc == BrightFormat.crc16(bytes)) return coded to String(bytes, Charsets.UTF_8)
+                if (crc == BrightFormat.crc16(bytes)) {
+                    val t = if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8)
+                    if (t != null) return coded to t
+                }
             }
             return coded to null
         }
@@ -702,7 +709,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         val endT = t0 + w.end
         return Result(text != null, if (text != null) "read" else "check byte wrong", text ?: "", mode, tag, nonce, len, pminMs, t0,
             coded, body, chans.size, syncCorr, note, apart, best.swing / best.sigma, endT,
-            blocks = chans.map { c -> series.indexOfFirst { it === c.s } }.filter { it >= 0 })
+            blocks = chans.map { c -> series.indexOfFirst { it === c.s } }.filter { it >= 0 }, packed = packed)
     }
 
     companion object {

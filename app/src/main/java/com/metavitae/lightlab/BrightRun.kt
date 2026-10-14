@@ -270,10 +270,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         // Compare with the test messages (same length) to count errors before repair.
         var bitErr = -1; var symErr = -1; var nSym = 0; var expectedText = ""
         if (mode != null && r.coded != null) {
-            val exp = BrightFormat.TEST_MESSAGES.firstOrNull { BrightFormat.utf8(it).size == r.len }
+            fun bytesOf(t: String) = (if (r.packed) TextPack.pack(t) else null) ?: BrightFormat.utf8(t)
+            val exp = BrightFormat.TEST_MESSAGES.firstOrNull { bytesOf(it).size == r.len }
             if (exp != null) {
                 expectedText = exp
-                val e = BrightFormat.bodyBits(BrightFormat.utf8(exp), pass, r.nonce)
+                val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce)
                 bitErr = e.indices.count { e[it] != r.coded[it] }
                 val sym = BrightFormat.withPilots(BrightFormat.bitsToSymbols(e, mode), mode).first
                 val got = r.bodySyms!!
