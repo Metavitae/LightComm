@@ -31,6 +31,8 @@ class MainActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Field use (Oct 14): show over the lock screen and wake it, so a locked phone needs no unlocking (like a camera app).
+        setShowWhenLocked(true); setTurnScreenOn(true)
         // adb shortcut for CC: am start ... --es mode facts  (skips the safety screen)
         when (intent.getStringExtra("mode")) {
             "facts" -> withCamera { showFacts() }
