@@ -178,6 +178,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         const val NB = 12
         const val NC = 8
         const val NCH = NB * NC + 1
+        /** Fine squares (Oct 14): 32 x 24, for a small far light on a bright background (8 x smaller than a block). */
+        const val FX = 32
+        const val FY = 24
+        /** How many of the most flickering fine squares are searched and read, besides the known ones. */
+        const val FINE_PICK = 8
         const val CAP = 30 * 150
         const val HEAD = "time,from_phone,to_phone,mode,levels,per_sec,result,bit_errors_before_repair,coded_bits,symbol_errors,symbols," +
             "text_seconds,send_seconds,channels,signal_to_noise,levels_apart,shortest_pulse_ms,sync_match,room,lux,background,iso,exposure_ms,paces,note,text\n"
@@ -185,6 +190,8 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
 
     private val times = DoubleArray(CAP)
     private val vals = Array(CAP) { FloatArray(NCH) }
+    /** Fine squares, brightness x 100 (compact: 32 x 24 x 4500 pictures is about 7 MB). */
+    private val fineVals = Array(CAP) { ShortArray(FX * FY) }
     private var count = 0L     // frames ever added
     private val lock = Any()
     @Volatile var scanFrom = 0.0
@@ -198,8 +205,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
     /** Speed of the expected reply (the speed our message went at). */
     @Volatile var expectRate = 30
     private var replyFrom = 0.0
+    private var lastReplyFine = false
     /** Blocks that carried the last send read right (up to 6), searched for the next sync too. */
     private var known: List<Int> = emptyList()
+    /** Fine squares that carried the last send read right. */
+    private var knownFine: List<Int> = emptyList()
     /** Seconds of raw brightness to record after "ready" (0 = none), for replaying a miss on the computer. */
     @Volatile var traceSec = 0.0
     private val trace = StringBuilder()
@@ -239,6 +249,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
             var whole = 0f
             for (i in 0 until NB * NC) { v[i] = v[i] / per; whole += v[i] }
             v[NB * NC] = whole / (NB * NC)
+            val fv = fineVals[k]
+            val fsum = FloatArray(FX * FY)
+            for (y in 0 until zy) { val r = (y * FY / zy) * FX; for (x in 0 until zx) fsum[r + x * FX / zx] += fine[y * zx + x] }
+            val fper = (zy / FY) * (zx / FX)
+            for (i in fsum.indices) fv[i] = (fsum[i] / fper * 100).toInt().coerceIn(0, 32767).toShort()
             count++
             if (traceSec > 0 && readyAt > 0 && !traceDone && times[k] >= readyAt) {
                 if (times[k] - readyAt <= traceSec) {
@@ -268,6 +283,40 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         List(NCH) { ch -> BrightDecoder.Series(t, DoubleArray(idx.size) { vals[idx[it]][ch].toDouble() }) }
     }
 
+    /** Pictures (ring indexes) from time a to b. Call inside the lock. */
+    private fun indexes(a: Double, b: Double): IntArray {
+        val n = minOf(count, CAP.toLong()).toInt()
+        val first = count - n
+        val idx = ArrayList<Int>()
+        for (j in 0 until n) { val k = ((first + j) % CAP).toInt(); if (times[k] in a..b) idx.add(k) }
+        return idx.toIntArray()
+    }
+
+    /** Fine squares as picture series, from time a to b. */
+    private fun fineWindow(a: Double, b: Double, zones: List<Int>): List<BrightDecoder.Series> = synchronized(lock) {
+        val idx = indexes(a, b)
+        val t = DoubleArray(idx.size) { times[idx[it]] }
+        zones.map { z -> BrightDecoder.Series(t, DoubleArray(idx.size) { fineVals[idx[it]][z] / 100.0 }) }
+    }
+
+    /**
+     * Fine squares that flicker most between a and b, measured against their own brightness (picture noise
+     * grows with brightness, so a bright sunny floor doesn't win just by being bright), plus the known ones.
+     */
+    private fun flickery(a: Double, b: Double): List<Int> {
+        val score = synchronized(lock) {
+            val idx = indexes(a, b)
+            DoubleArray(FX * FY) { z ->
+                if (idx.size < 10) 0.0 else {
+                    var d = 0.0; var m = 0.0; var prev = fineVals[idx[0]][z].toDouble()
+                    for (k in idx) { val v = fineVals[k][z].toDouble(); d += kotlin.math.abs(v - prev); m += v; prev = v }
+                    (d / (idx.size - 1)) / kotlin.math.sqrt(m / idx.size + 400.0)
+                }
+            }
+        }
+        return ((0 until FX * FY).sortedByDescending { score[it] }.take(FINE_PICK) + knownFine).distinct()
+    }
+
     /** The finished recording, once (seconds after ready, 96 blocks, whole picture). */
     fun takeTrace(): String? = synchronized(lock) {
         if (!traceDone || trace.isEmpty()) return null
@@ -290,13 +339,14 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         val from = maxOf(scanFrom, now - 140)
         if (now - from < (if (link != null) shortLen else syncLen) + 1) return emptyList()
         pending?.let { (pt, pe) -> if (pt >= from - 0.1 && now < pe) return emptyList() }
-        val ws = window(from - 0.1, now)
         scanReply(syncLen)?.let { return listOf(it) }
+        val fz = flickery(from, now)
+        val ws = window(from - 0.1, now) + fineWindow(from - 0.1, now, fz)
         // Find the sync on the whole picture and on the 4 liveliest blocks.
         // Where to look for a sync: the whole picture, the liveliest blocks (people and pets moving are lively too),
         // and the blocks that carried our last read send (a small far light is easy to lose among the lively ones).
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
-        val search = (listOf(NB * NC) + lively + known).distinct()
+        val search = (listOf(NB * NC) + lively + known).distinct() + fz.indices.map { NCH + it }
         val starts = search.flatMap { ch -> dec.findStarts(ws[ch], from, now - syncLen - 0.3, 0.8).map { Triple(it.first, it.second, false) } +
             (if (link != null) dec.findStarts(ws[ch], from, now - shortLen - 0.3, 0.8, short = true).map { Triple(it.first, it.second, true) } else emptyList()) }
         val t0 = starts.minByOrNull { it.first } ?: run {
@@ -312,7 +362,7 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         }
         val short = t0.third
         val c = starts.filter { it.third == short && kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
-        val all = window(t0.first - 0.5, now)
+        val all = window(t0.first - 0.5, now) + fineWindow(t0.first - 0.5, now, fz)
         val r = dec.decode(all, t0.first, c, if (short) link else null)
         val headerDone = t0.first + (if (short) shortLen + BrightFormat.SHORT_HDR_SYMS.toDouble() / BrightFormat.RATES.last()
                                      else syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last()) + 1.0
@@ -321,10 +371,11 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         if (r.mode == null && now < headerDone) return emptyList()       // wait for the header at the slow speed
         hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
-        if (r.ok) known = r.blocks.filter { it < NB * NC }.take(6)
+        if (r.ok) { known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }.take(6) }
         val line = logLine(r)
         heard.add(r)
-        return listOf(line)
+        val nFine = r.blocks.count { it >= NCH }
+        return listOf(line) + (if (r.mode != null) listOf("# channels used: ${r.blocks.size - nFine} blocks, $nFine fine squares\n") else emptyList())
     }
 
     /** If a short reply is expected: look for it on the whole picture, the liveliest blocks and the known ones. */
@@ -337,15 +388,18 @@ class BrightListener(private val ctx: Context, private val pass: String, val exp
         // Half a second before "ready" too: the reply's dark start may come while the camera settles.
         val from = maxOf(replyFrom, readyAt - 0.5, now - 30)
         if (now - from < replyLen + 0.5) return null
-        val ws = window(from - 0.1, now)
+        val fz = flickery(from, now)
+        val ws = window(from - 0.1, now) + fineWindow(from - 0.1, now, fz)
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
-        val hits = (listOf(NB * NC) + lively + known).distinct().mapNotNull { dec.findReply(ws[it], from, now - replyLen - 0.2, n, perSec = rate) }
+        val hits = ((listOf(NB * NC) + lively + known).distinct() + fz.indices.map { NCH + it })
+            .mapNotNull { ch -> dec.findReply(ws[ch], from, now - replyLen - 0.2, n, perSec = rate)?.let { it to ch } }
         replyFrom = now - replyLen - 0.2
-        val best = hits.maxByOrNull { it.second } ?: return null
+        val (best, bestCh) = hits.maxByOrNull { it.first.second } ?: return null
+        lastReplyFine = bestCh >= NCH
         expect = -1
         replies.add(n to best.third)
-        return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready\n",
-            if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt)
+        return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready%s\n",
+            if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt, if (lastReplyFine) " (best on a fine square)" else "")
     }
 
     private fun variance(y: DoubleArray): Double { if (y.isEmpty()) return 0.0; val m = y.average(); return y.sumOf { (it - m) * (it - m) } / y.size }
