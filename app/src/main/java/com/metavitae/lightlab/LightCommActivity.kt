@@ -96,7 +96,14 @@ class LightCommActivity : Activity() {
         events.add(o)
     }
 
-    private fun stopTalk() { talk?.stop(); talk = null; talkKey = ""; phase = "idle"; file?.append("\nSTOPPED.\n") }
+    private fun stopTalk() { talk?.stop(); talk = null; talkKey = ""; phase = "idle"; file?.append("\nSTOPPED.\n"); widget("LightComm", "Not listening · tap to open") }
+    // Widget: changes only when something happens (never polls, never wakes the camera).
+    private var chatName = ""
+    private var unseen = 0
+    @Volatile private var visible = false
+    private fun widget(title: String, caption: String) = try { LightCommWidget.show(this, title, caption) } catch (_: Exception) {}
+    override fun onResume() { super.onResume(); visible = true; unseen = 0; if (talk != null) widget("Listening", chatName) }
+    override fun onPause() { visible = false; super.onPause() }
 
     private fun startTalk(key: String) {
         if (talk != null && talkKey == key) return
@@ -110,10 +117,10 @@ class LightCommActivity : Activity() {
         t.watchFind = true
         t.events = object : Talk.Events {
             override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {
-                phase = "sending"; push("sending", "k" to k, "attempt" to attempt, "perSec" to mode.perSec, "short" to short)
+                widget("Sending as light", chatName); phase = "sending"; push("sending", "k" to k, "attempt" to attempt, "perSec" to mode.perSec, "short" to short)
             }
             override fun sent(k: Int, text: String, ok: Boolean, tries: Int, seconds: Double) {
-                phase = "listening"; push("sent", "k" to k, "ok" to ok, "tries" to tries, "seconds" to seconds)
+                widget(if (ok) "Delivered" else "Not delivered", chatName); phase = "listening"; push("sent", "k" to k, "ok" to ok, "tries" to tries, "seconds" to seconds)
                 cue(if (ok) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_NACK, 300)
             }
             override fun heard(r: BrightDecoder.Result, dup: Boolean) {
@@ -121,7 +128,8 @@ class LightCommActivity : Activity() {
                 val fine = r.blocks.count { it >= BrightListener.NCH }
                 push("heard", "ok" to r.ok, "dup" to dup, "text" to r.text, "from" to BrightFormat.phoneName(r.phoneTag),
                     "snr" to r.snr, "zones" to zones, "fine" to fine, "used" to JSONArray(r.blocks.filter { it < BrightListener.NB * BrightListener.NC }))
-                if (r.ok && !dup) cue(ToneGenerator.TONE_PROP_ACK, 400)
+                if (r.ok && !dup) { cue(ToneGenerator.TONE_PROP_ACK, 400)
+                    if (!visible) { unseen++; widget(BrightFormat.phoneName(r.phoneTag), "$unseen new · tap to open") } else widget("Listening", chatName) }
             }
             override fun problem(text: String) { push("problem", "text" to text) }
             override fun aim(score: Double) {
@@ -141,6 +149,7 @@ class LightCommActivity : Activity() {
     inner class Bridge {
         @JavascriptInterface fun phone(): String = BrightFormat.KNOWN_PHONES[Build.MODEL] ?: Build.MODEL
         @JavascriptInterface fun open(key: String) = runOnUiThread { startTalk(key) }
+        @JavascriptInterface fun chatName(name: String) { chatName = name; widget("Listening", name) }
         @JavascriptInterface fun close() = runOnUiThread { stopTalk() }
         @JavascriptInterface fun send(text: String) { talk?.enqueue(text.take(80)) }
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }

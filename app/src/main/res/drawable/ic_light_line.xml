@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The line of light (the LightComm mark from the approved opening, as drawn on Chat's widget board). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="48dp" android:viewportWidth="24" android:viewportHeight="48">
+    <path android:pathData="M12,2 L12,36" android:strokeColor="#FF9477" android:strokeAlpha="0.25" android:strokeWidth="2.4" android:strokeLineCap="round" />
+    <path android:pathData="M12,18 L12,36" android:strokeColor="#FF9477" android:strokeAlpha="0.7" android:strokeWidth="2.4" android:strokeLineCap="round" />
+    <path android:pathData="M12,40 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" android:fillColor="#FF9477" android:fillAlpha="0.35" />
+    <path android:pathData="M12,40 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0" android:fillColor="#FF9477" />
+</vector>

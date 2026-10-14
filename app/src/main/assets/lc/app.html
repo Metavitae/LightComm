@@ -256,7 +256,7 @@ function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKe
 function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
 function openChat(c){ cur = c; session = 0; msgs = store.get('lc.msgs.' + c.id, []);
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
-  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); show('vChat') }
+  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat') }
 function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
 function save(){ if (cur) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
 function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
