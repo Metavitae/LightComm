@@ -239,14 +239,27 @@ function frame(T){
 }
 
 /* ---------- playback ---------- */
-let gone=false; function done(){ if(gone) return; gone=true; location.replace('app.html'); }
+// Intro sound "Deep pulse, warm" (A3, chosen Oct 14): 18 s, plays with the opening and drives its clock
+// (so a slow phone can't drift apart from it). Obeys the app's Sounds setting: on / vibrate (one short buzz
+// when the wordmark appears) / off. Tap to skip fades it out in about 0.3 s.
+let soundMode='on'; try{ soundMode=JSON.parse(localStorage.getItem('lc.sounds')||'"on"'); }catch(e){}
+const audio=new Audio('intro.mp3'); audio.preload='auto';
+let audioOn=false, buzzed=false;
+let gone=false; function done(){ if(gone) return; gone=true;
+  const go=()=>location.replace('app.html');
+  if(audioOn && !audio.paused){ const v0=audio.volume, t0=performance.now();
+    const f=()=>{ const k=(performance.now()-t0)/300; if(k>=1){ audio.pause(); go(); return; } audio.volume=Math.max(0,v0*(1-k)); requestAnimationFrame(f); }; f(); }
+  else go(); }
 let start=performance.now(), still=false, lastLoop=0;
 const q=new URLSearchParams(location.search), fixed=q.get('t');
+if(soundMode==='on' && fixed===null && !reduce){ audio.play().then(()=>{audioOn=true;}).catch(()=>{}); }
 pickEntrance();
 function tick(){
   if(fixed!==null){ frame(parseFloat(fixed)); return; }
   if(still){ frame(FINAL); return; }
-  const raw=(performance.now()-start)/1000, lp=Math.floor(raw/LOOP);
+  // The sound's clock leads while it plays; otherwise the screen's clock.
+  const raw=(audioOn && !audio.paused && audio.currentTime>0) ? audio.currentTime : (performance.now()-start)/1000, lp=Math.floor(raw/LOOP);
+  if(soundMode==='vibrate' && !buzzed && raw>=14.3){ buzzed=true; try{ window.LC && LC.buzz(60); }catch(e){} }
   if(lp!==lastLoop){lastLoop=lp;pickEntrance();}
   if(raw>=17.6){ done(); return; }
   const T=raw%LOOP;

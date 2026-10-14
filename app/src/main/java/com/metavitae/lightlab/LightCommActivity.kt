@@ -146,6 +146,10 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
         @JavascriptInterface fun setSounds(s: String) { sounds = s }
+        /** One short vibration (the opening's wordmark when Sounds = Vibrate). */
+        @JavascriptInterface fun buzz(ms: Int) {
+            try { getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(ms.toLong().coerceIn(10, 300), 180)) } catch (_: Exception) {}
+        }
         /** Camera picture behind the chat: shown, or dimmed to nothing (the camera keeps listening either way). */
         @JavascriptInterface fun cameraBehind(on: Boolean) = runOnUiThread { preview.alpha = if (on) 0.7f else 0.01f }
         @JavascriptInterface fun brightness(level: Float) = runOnUiThread {
