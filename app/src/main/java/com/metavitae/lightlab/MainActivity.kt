@@ -111,7 +111,10 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        if (!onMenu && pendingCamera == null) { leave(); showMenu() }
+        // Over the lock screen (field use, or a test started while the phone had locked itself) Android pauses
+        // the screen for a moment as it appears: keep going then. Only a real leave stops the test (Oct 14).
+        val overLock = getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (!onMenu && pendingCamera == null && !overLock) { leave(); showMenu() }
     }
 
     private fun savedPass(): String =

@@ -169,6 +169,7 @@ class Talk(
         while (tv != null && !tv.isAvailable && alive) Thread.sleep(50)
         show("Starting camera...")
         openCam()
+        if (!alive) { log("# stopped before listening began\n"); return }
         log("# ready: listening, background ${f1(rx.background())}, brightest spots ${f1(rx.brightTop())}, ISO $iso, picture ${f1(exp * 1000)} ms\n")
         val findWave = BrightFormat.aimWave(15, 20.0)
         val findPeriod = BrightFormat.SHORT_SYNC.size / 15.0
