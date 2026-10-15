@@ -22,6 +22,16 @@ class LightCommWidget : AppWidgetProvider() {
         draw(ctx, mgr, ids, p.getString("title", "LightComm")!!, p.getString("caption", "TAP TO OPEN")!!)
     }
 
+    override fun onReceive(ctx: Context, intent: Intent) {
+        super.onReceive(ctx, intent)
+        // A new build was installed: the launcher fell back to the plain layout without the tap action
+        // (tapping then opened Light Lab, Oct 14). Draw it again so a tap opens LightComm.
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            val mgr = AppWidgetManager.getInstance(ctx)
+            onUpdate(ctx, mgr, mgr.getAppWidgetIds(ComponentName(ctx, LightCommWidget::class.java)))
+        }
+    }
+
     companion object {
         fun show(ctx: Context, title: String, caption: String) {
             ctx.getSharedPreferences("lc_widget", Context.MODE_PRIVATE).edit().putString("title", title).putString("caption", caption).apply()

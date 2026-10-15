@@ -36,6 +36,8 @@
         <receiver android:name=".LightCommWidget" android:exported="false" android:label="LightComm">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <!-- After each install the launcher shows the plain layout with no tap action: draw it again. -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_lightcomm_info" />
         </receiver>
