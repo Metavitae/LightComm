@@ -18,7 +18,7 @@ import kotlin.math.max
  * No "got it": it sends again (auto-resend), slower if allowed (auto-speed), up to `tries` times.
  *
  * Short openings: after one full send was answered "got it", the two phones are linked and the
- * next sends use a 1 s sync and a 20-bit header (about 4.7 s of fixed cost at 15 per second
+ * next sends use a 1 s sync and a 24-bit header (about 4.7 s of fixed cost at 15 per second
  * instead of about 10.5 s). A short send that gets no reply at all drops the link (next try: full).
  *
  * Turns (both phones have texts): a phone sends when it starts first, or right after it answered

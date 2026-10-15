@@ -39,8 +39,11 @@ object BrightFormat {
      * It matches the full sync at most 0.42 (the receiver needs 0.8), so the two are never confused.
      */
     val SHORT_SYNC: IntArray = mseq(4, 1)
-    /** Short header: mode 4 | length 8 | check byte 8 (keyed with the passphrase and the link). */
-    const val SHORT_HDR_BITS = 20
+    /**
+     * Short header: mode 4 | length 8 | check 12 (keyed with the passphrase and the link).
+     * 12 bits, not 8 (Oct 14): with 8 a garbled header passed by chance about 1 time in 28.
+     */
+    const val SHORT_HDR_BITS = 24
     const val TAIL = 9
     val BARKER = intArrayOf(1, 1, 1, 0, 0, 1, 0)
     const val HDR_BITS = 60
@@ -177,15 +180,15 @@ object BrightFormat {
         val k = MessageFormat.keystream("$pass/link/$seq", linkId, 2)
         return ((k[0].toInt() and 0xff) shl 8) or (k[1].toInt() and 0xff)
     }
-    /** Short header's check byte: over nonce, mode and length, plus the passphrase stamp (a stranger can't make it). */
+    /** Short header's 12-bit check: over nonce, mode and length, plus the passphrase stamp (a stranger can't make it). */
     fun shortCheck(pass: String, nonce: Int, modeNibble: Int, len: Int): Int {
         val st = MessageFormat.tag(pass, nonce)
-        return MessageFormat.crc8(byteArrayOf((nonce shr 8).toByte(), nonce.toByte(), modeNibble.toByte(), len.toByte(), (st shr 8).toByte(), st.toByte()))
+        return 0xFFF and crc16(byteArrayOf((nonce shr 8).toByte(), nonce.toByte(), modeNibble.toByte(), len.toByte(), (st shr 8).toByte(), st.toByte()))
     }
     fun shortHeaderBits(pass: String, nonce: Int, mode: Mode, len: Int, packed: Boolean): IntArray {
         val b = ArrayList<Int>()
         val m = mode.id or (if (packed) 8 else 0)
-        bitsOf(m, 4, b); bitsOf(len, 8, b); bitsOf(shortCheck(pass, nonce, m, len), 8, b)
+        bitsOf(m, 4, b); bitsOf(len, 8, b); bitsOf(shortCheck(pass, nonce, m, len), 12, b)
         return interleave(hamming(b))
     }
 
@@ -708,7 +711,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
 
     /**
      * Try to read one send whose sync starts near t0 (receiver clock).
-     * link != null: a short opening from that link (follow-up numbers lastSeq .. lastSeq + 8 are tried).
+     * link != null: a short opening from that link (follow-up numbers lastSeq .. lastSeq + 2 are tried).
      */
     fun decode(series: List<Series>, t0: Double, syncCorr: Double, link: BrightFormat.Link? = null): Result {
         val short = link != null
@@ -733,9 +736,11 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         fun sane(modeId: Int, l: Int, tryRate: Int) = BrightFormat.MODES.getOrNull(modeId)?.perSec == tryRate && l in 1..BrightFormat.MAX_BYTES
         fun headerOk(bits: IntArray, tryRate: Int): Boolean {
             if (link != null) {
-                val m = bitsInt(bits, 0, 4); val l = bitsInt(bits, 4, 8); val chk = bitsInt(bits, 12, 8)
+                val m = bitsInt(bits, 0, 4); val l = bitsInt(bits, 4, 8); val chk = bitsInt(bits, 12, 12)
                 if (!sane(m and 7, l, tryRate)) return false
-                for (k in max(1, link.lastSeq)..link.lastSeq + 8)
+                // The sender only moves on after our "got it", so its number is our last one (a resend) or the next;
+                // +2 is slack. Every extra number tried is one more chance for a garbled header to pass by luck.
+                for (k in max(1, link.lastSeq)..link.lastSeq + 2)
                     if (chk == BrightFormat.shortCheck(pass, BrightFormat.seqNonce(pass, link.id, k), m, l)) { seq = k; return true }
                 return false
             }
