@@ -134,22 +134,53 @@ class Talk(
             Thread.sleep(600)
         } else Thread.sleep(500)
         // Oct 14: the POCO's camera got stuck giving pure black pictures (no noise at all, even at full sensitivity)
-        // until the phone's own Camera app was opened once. Try a fresh start once; then tell the person.
+        // until the phone's own Camera app was opened once. Oct 15 (night test): it happened 4 times and a plain
+        // fresh start never fixed it. So: start like the Camera app (automatic brightness first), then wake the
+        // phone's camera system by opening another camera for a moment. Each step is logged, to learn what works.
         if (blackCamera() && alive) {
-            log("# camera gives pure black pictures: starting it again\n")
-            cam?.closeAndWait(2000); Thread.sleep(400)
-            val c2 = CamSession(act, camId, tv) { }
-            c2.manual = true; c2.fps = 30; c2.expNs = (exp * 1e9).toLong(); c2.iso = iso
-            c2.onError = { e -> log("# camera problem: $e\n") }
-            c2.zoneSink = { ts, fine -> rx.add(ts, fine) }
-            cam = c2; c2.open {}
-            Thread.sleep(1200)
+            log("# camera gives pure black pictures: starting it again with automatic brightness first\n")
+            if (!restartAuto()) {
+                val other = otherCamera()
+                if (other != null && alive) {
+                    log("# camera still black: opening camera $other for a moment to wake the camera system\n")
+                    closeCam()
+                    val o2 = CamSession(act, other, null) { }
+                    o2.manual = false; o2.fps = 30
+                    o2.onError = { e -> log("# camera $other problem: $e\n") }
+                    o2.open {}; Thread.sleep(1500); o2.closeAndWait(2000); Thread.sleep(400)
+                    if (restartAuto()) log("# camera black fixed by: opening camera $other for a moment\n")
+                }
+            } else log("# camera black fixed by: start with automatic brightness\n")
             if (blackCamera()) { log("# camera still black\n"); events?.problem("Camera stuck: open the phone's Camera app once, then come back.") }
+            lastBlackFix = now()
         }
         rx.iso = iso
         rx.readyAt = rx.newest()
         return now() - t0
     }
+
+    /** Close the camera, open it with automatic brightness for a moment (as the Camera app does), then fixed settings again. True = not black now. */
+    private fun restartAuto(): Boolean {
+        closeCam()
+        val c2 = CamSession(act, camId, tv) { }
+        c2.manual = false; c2.fps = 30
+        c2.onError = { e -> log("# camera problem: $e\n") }
+        c2.zoneSink = { ts, fine -> rx.add(ts, fine) }
+        cam = c2; c2.open {}
+        Thread.sleep(1500)
+        c2.manual = true; c2.expNs = (exp * 1e9).toLong(); c2.iso = iso; c2.apply()
+        Thread.sleep(1200)
+        return !blackCamera()
+    }
+
+    /** Any other camera of this phone (front or back), to wake the camera system; null if there is none. */
+    private fun otherCamera(): String? = try {
+        act.getSystemService(android.hardware.camera2.CameraManager::class.java).cameraIdList.firstOrNull { it != camId }
+    } catch (_: Exception) { null }
+
+    /** When the black-camera fix last ran (it may run again while listening, at most once a minute). */
+    private var lastBlackFix = 0.0
+    private var blackSince = 0.0
 
     /** Pure black: not even picture noise (a dark room still gives some). */
     private fun blackCamera() = rx.newest() > 0 && rx.background() < 0.05 && rx.brightTop() < 0.5
@@ -173,7 +204,8 @@ class Talk(
 
     private fun loop() {
         rx.room = o.room; rx.paces = o.paces; rx.earlySec = 0.5
-        if (o.expect.isNotEmpty()) rx.expectTexts = o.expect
+        // No list (LightComm app, Field screen): the texts are typed by people, nothing to compare them with.
+        rx.expectTexts = o.expect
         rx.startLux()
         log(Results.header("Talking in turns") + "Passphrase rhythm: ${MessageFormat.beaconHz(pass)} /s (passphrase itself not saved)\n" +
             "To send: ${o.outbox.size} messages; start speed: ${BrightFormat.MODES[o.startMode].name}; auto-speed ${if (o.auto && li >= 0) "on" else "off"}; " +
@@ -209,6 +241,15 @@ class Talk(
                 closeCam(); sender.aim(15, sec.toDouble()); openCam()
                 quietSince = now(); continue
             }
+            // Oct 15: the POCO's camera also went black in the middle of listening (01:46). Black for 3 s: fix it.
+            if (cam != null && rx.readyAt > 0 && !rx.hearing && blackCamera()) {
+                if (blackSince == 0.0) blackSince = now()
+                if (now() - blackSince >= 3 && now() - lastBlackFix >= 60) {
+                    log("# camera went black while listening\n")
+                    blackSince = 0.0
+                    closeCam(); openCam(); quietSince = now(); continue
+                }
+            } else blackSince = 0.0
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
             if (next < box.size && (next + 1) in stoppedK) {

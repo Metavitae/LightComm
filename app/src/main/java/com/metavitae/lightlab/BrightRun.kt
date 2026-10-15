@@ -371,6 +371,32 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     }
 
     /** The finished recording, once (seconds after ready, 96 blocks, whole picture). */
+    private var missesSaved = 0
+
+    /**
+     * Oct 15 (night test): 6 sends had a strong signal and still no header read, and nothing was saved to replay.
+     * Now a strong miss saves its brightness (blocks + whole picture, as the bright-trace files) from 2 s before
+     * the sync to now, at most 5 per session. Replay on the computer: TraceReplay <file> <passphrase>. Returns the path.
+     */
+    private fun missRecording(r: BrightDecoder.Result): String? {
+        if (r.ok || r.snr < 5 || missesSaved >= 5) return null
+        val a = r.t0 - 2.0
+        val text = synchronized(lock) {
+            val sb = StringBuilder("t_from_2s_before_sync," + (0 until NB * NC).joinToString(",") { "b$it" } + ",whole\n")
+            val n = minOf(count, CAP.toLong())
+            for (j in n downTo 1) {
+                val k = ((count - j) % CAP).toInt()
+                if (times[k] < a) continue
+                sb.append(String.format(Locale.US, "%.5f", times[k] - a))
+                for (x in vals[k]) sb.append(',').append(Math.round(x * 10) / 10.0)
+                sb.append('\n')
+            }
+            sb.toString()
+        }
+        missesSaved++
+        return try { LiveFile(ctx, "miss-trace").also { it.append("# ${r.stage}, signal ${String.format(Locale.US, "%.1f", r.snr)}\n" + text) }.path } catch (_: Exception) { null }
+    }
+
     fun takeTrace(): String? = synchronized(lock) {
         if (!traceDone || trace.isEmpty()) return null
         val out = "t_after_ready," + (0 until NB * NC).joinToString(",") { "b$it" } + ",whole\n" + trace
@@ -425,7 +451,7 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
         if (r.ok) { known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }.take(6) }
-        val line = logLine(r)
+        val line = logLine(r) + (missRecording(r)?.let { "# brightness recording of this miss saved: $it\n" } ?: "")
         heard.add(r)
         val nFine = r.blocks.count { it >= NCH }
         return listOf(line) + (if (r.mode != null) listOf("# channels used: ${r.blocks.size - nFine} blocks, $nFine fine squares\n") else emptyList())
@@ -488,7 +514,9 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
             fun bytesOf(t: String) = (if (r.packed) TextPack.pack(t) else null) ?: BrightFormat.utf8(t)
             // Two test messages can pack to the same length: match the text read first, then the length.
             val texts = expectTexts
-            val exp = texts.firstOrNull { r.ok && it == r.text } ?: texts.firstOrNull { bytesOf(it).size == r.len }
+            // A text read right that is none of the test messages was typed by a person: nothing to compare it with
+            // (Oct 15: typed texts were compared with a same-length test message and logged READ_DIFFERENT).
+            val exp = if (r.ok) texts.firstOrNull { it == r.text } else texts.firstOrNull { bytesOf(it).size == r.len }
             if (exp != null) {
                 expectedText = exp
                 val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce)
@@ -501,7 +529,8 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
             }
         }
         val result = when {
-            r.ok && (expectedText.isEmpty() || r.text == expectedText) -> "RIGHT"
+            r.ok && expectedText.isNotEmpty() -> "RIGHT"
+            r.ok && expectTexts.isEmpty() -> "READ"          // typed by a person (LightComm, Field): read, checks passed
             r.ok -> "READ_DIFFERENT"
             else -> "FAILED: ${r.stage}"
         }
@@ -510,7 +539,7 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         if (mode != null) {
             val key = "${mode.name} | $from -> $to | $room"
             val t = tally.getOrPut(key) { IntArray(2) }
-            t[1]++; if (result == "RIGHT") t[0]++
+            t[1]++; if (result == "RIGHT" || result == "READ") t[0]++
         }
         lastUsed = emptySet()
         val textSec = if (mode != null) BrightFormat.Layout(mode, r.len).let { it.bodySyms * mode.symSec } else 0.0
@@ -519,7 +548,7 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         return String.format(Locale.US, "%s,%s,%s,%d,%d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,%d,%.1f,%d,%d,%.2f,%s,%.1f,%.1f,%d,%.1f,%s,%s,\"%s\"\n",
             SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()), from, to, mode?.id ?: -1, mode?.levels ?: 0, mode?.perSec ?: 0, result,
             bitErr, r.coded?.size ?: 0, symErr, nSym, textSec, sendSec, r.channels, r.snr, r.levelsApart, r.pminMs, r.syncCorr,
-            room, lux, background(), iso, expSec * 1000, paces.replace(",", " "), r.note, r.text.replace("\"", "'")) +
+            room, lux, background(), iso, expSec * 1000, paces.replace(",", " "), "\"" + r.note.replace("\"", "'") + "\"", r.text.replace("\"", "'")) +
             (if (r.mode != null) "# nonce ${r.nonce}\n" else "")
     }
 

@@ -1201,7 +1201,7 @@ class MainActivity : Activity() {
                     if (r.snr < 7) " · weak: move closer or change the light" else ""
                 if (r.ok && !dup) {
                     addLine("← ${r.text}", RED, 22f); tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
-                    if (autoAnswer && !r.text.startsWith("COPY")) send("COPY: ${r.text.take(40)}")
+                    if (autoAnswer && !r.text.startsWith("COPY")) send("COPY: ${r.text}")
                 }
                 else if (!r.ok) addLine("← (saw a message, could not read it: asked again)", DIM, 14f)
             }

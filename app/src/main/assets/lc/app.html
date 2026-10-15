@@ -324,7 +324,7 @@ function tick(){
       (e.used || []).forEach(i => { grid[cellFor(i, st.orient || 90)].classList.add('used'); bgGrid[cellFor(i, st.orient || 90)].classList.add('used') });
       if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : '') }); drawMsgs();
         line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
-        if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text.slice(0, 40)) }
+        if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
   }
