@@ -146,7 +146,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
   </div>
   <div id="inputRow">
-    <input id="box" placeholder="Write to the circle" maxlength="80" enterkeyhint="send" onkeydown="if(event.key==='Enter'){sendBox()}">
+    <input id="box" placeholder="Write to the circle" maxlength="400" enterkeyhint="send" onkeydown="if(event.key==='Enter'){sendBox()}">
     <button id="sendBtn" onclick="sendBox()" aria-label="Send as light"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="13" cy="13" r="4.5" fill="currentColor"/><path d="M13 2v3.5M13 20.5V24M2 13h3.5M20.5 13H24M5.2 5.2l2.5 2.5M18.3 18.3l2.5 2.5M5.2 20.8l2.5-2.5M18.3 7.7l2.5-2.5"/></svg></button>
   </div>
 </section>
@@ -271,15 +271,34 @@ function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
       s.textContent = 'STOP · EDIT'; s.setAttribute('aria-label', 'Stop sending and edit'); s.onclick = ev => { ev.stopPropagation(); stopEdit(m) }; d.appendChild(s) }
     box.appendChild(d) });
   box.scrollTop = box.scrollHeight; save() }
-function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…'; m.k = LC.send(m.text); drawMsgs() }
+// Long messages (founder Oct 15: "a very short amount of words"): up to 400 letters, sent as parts that each fit
+// one send (80 bytes) and each get their own "got it". Each part starts with "~" + group letter + "part/parts ",
+// e.g. "~c2/4 ". A miss resends only the parts not delivered; the other phone joins the parts into one message.
+// A message that fits in one send goes exactly as before (no tag).
+const PART = /^~([a-z])([1-9])\/([1-9]) ([\s\S]*)$/;
+function splitParts(text){ if (LC.bytes(text) <= 80) return [text];
+  const g = 'abcdefghijklmnopqrstuvwxyz'[store.get('lc.grp', 0) % 26]; store.set('lc.grp', store.get('lc.grp', 0) + 1);
+  const fits = t => LC.bytes('~' + g + '9/9 ' + t) <= 80, out = []; let a = 0;
+  while (a < text.length) { let b = a, best = -1;
+    // Grow word by word (each part keeps its trailing space, so the parts join back exactly).
+    while (b < text.length) { let c = text.indexOf(' ', b); c = c < 0 ? text.length : c + 1; if (!fits(text.slice(a, c))) break; best = b = c }
+    if (best < 0) { best = a + 1; while (best < text.length && fits(text.slice(a, best + 1))) best++ }   // one very long word: cut it
+    out.push(text.slice(a, best)); a = best }
+  return out.length > 9 ? null : out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + ' ' + t) }
+function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…';
+  if (!m.parts) { const ps = splitParts(m.text); if (!ps) { m.state = 'failed'; m.meta = 'TOO LONG · MAKE IT SHORTER'; drawMsgs(); return } m.parts = ps.map(t => ({ t, ok:false })) }
+  m.parts.forEach(p => { if (!p.ok) p.k = LC.send(p.t) }); m.k = (m.parts.find(p => !p.ok) || {}).k; drawMsgs() }
 // Stop: the light goes off at once, the message leaves the chat and its text goes back in the typing box.
 const stoppedMsgs = {};
-function stopEdit(m){ LC.stop(m.k); stoppedMsgs[m.k] = m; const i = msgs.indexOf(m); if (i >= 0) msgs.splice(i, 1);
+function stopEdit(m){ (m.parts || []).forEach(p => { if (!p.ok) LC.stop(p.k) }); if (m.parts && m.parts.length === 1) stoppedMsgs[m.k] = m;
+  const i = msgs.indexOf(m); if (i >= 0) msgs.splice(i, 1);
   const b = $('box'), was = b.value.trim(); b.value = was ? m.text + ' ' + was : m.text; drawMsgs(); b.focus();
   line('Stopped. Change the message and send it again.', 5000) }
 function send(text){ if (!cur || !text) return; const m = { dir:'out', text, time:now() }; msgs.push(m); enqueue(m) }
 function sendBox(){ const v = $('box').value.trim(); if (v) { send(v); $('box').value = '' } }
-function bySession(k){ for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'out' && msgs[i].k === k && msgs[i].state === 'pending') return msgs[i]; return null }
+/** The message (still being sent) that part k belongs to, and the part: [m, p, part number]. */
+function bySession(k){ for (let i = msgs.length - 1; i >= 0; i--) { const m = msgs[i]; if (m.dir !== 'out' || m.state !== 'pending' || !m.parts) continue;
+  const j = m.parts.findIndex(p => p.k === k && !p.ok); if (j >= 0) return [m, m.parts[j], j + 1] } return [null, null, 0] }
 function bars(snr){ return snr >= 20 ? 5 : snr >= 12 ? 4 : snr >= 7 ? 3 : snr >= 4 ? 2 : 1 }
 function line(t, hold){ $('lnText').textContent = t; lastNote = { t, until: Date.now() + (hold || 0) } }
 
@@ -308,21 +327,37 @@ function doFind(){ if (findTimer) return; findCount = 10;
 function tick(){
   let st; try { st = JSON.parse(LC.poll()) } catch (e) { return }
   for (const e of st.events) {
-    if (e.type === 'sending') { const m = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
+    if (e.type === 'sending') { const [m, , j] = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (m.parts.length > 1 ? ' · PART ' + j + ' OF ' + m.parts.length : '') + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
       line(e.attempt > 1 ? 'No answer yet. Sending again' + (e.perSec < 30 ? ', slower.' : '.') : 'Sending as light. Keep the phone still.') }
     else if (e.type === 'stopped') { delete stoppedMsgs[e.k] }
     else if (e.type === 'sent' && e.ok && stoppedMsgs[e.k]) {
       // Stopped too late: the other phone had already read it and said "got it".
       const m = stoppedMsgs[e.k]; delete stoppedMsgs[e.k]; m.state = ''; m.meta = 'ALREADY ARRIVED BEFORE THE STOP · GOT IT'; msgs.push(m); drawMsgs();
       line('It had already arrived. Delivered.', 6000) }
-    else if (e.type === 'sent') { const m = bySession(e.k); if (m) { m.state = e.ok ? '' : 'failed';
-        m.meta = e.ok ? 'SENT AS LIGHT · ' + Math.round(e.seconds) + ' S · GOT IT' + (e.tries > 1 ? ' · ' + e.tries + ' TRIES' : '') : 'NOT DELIVERED · TAP TO SEND AGAIN'; drawMsgs() }
-      line(e.ok ? 'Got it. Delivered.' : 'Not delivered. Move closer or change the light, then tap the message.', 6000) }
+    else if (e.type === 'sent') { const [m, p] = bySession(e.k); if (m) { const n = m.parts.length;
+        m.sec = (m.sec || 0) + e.seconds; m.tries = (m.tries || 0) + e.tries;
+        if (e.ok) { p.ok = true; const done = m.parts.filter(q => q.ok).length;
+          if (done === n) { m.state = ''; m.meta = 'SENT AS LIGHT · ' + Math.round(m.sec) + ' S · GOT IT' + (n > 1 ? ' · ' + n + ' PARTS' : '') + (m.tries > n ? ' · ' + m.tries + ' TRIES' : '') }
+          else m.meta = 'PART ' + done + ' OF ' + n + ' GOT IT · SENDING THE REST' }
+        else { m.state = 'failed'; m.parts.forEach(q => { if (!q.ok && q !== p) LC.stop(q.k) });   // don't send later parts over a gap
+          const done = m.parts.filter(q => q.ok).length;
+          m.meta = done ? done + ' OF ' + n + ' PARTS ARRIVED · TAP TO SEND THE REST' : 'NOT DELIVERED · TAP TO SEND AGAIN' }
+        drawMsgs();
+        line(e.ok ? (m.state === 'pending' ? 'Got that part. Sending the next.' : 'Got it. Delivered.') : 'Not delivered. Move closer or change the light, then tap the message.', 6000) } }
     else if (e.type === 'heard') {
       lastHeard = e; drawSig(bars(e.snr)); $('zUsed').textContent = e.zones + (e.fine ? ' + ' + e.fine : '');
       grid.forEach(c => c.classList.remove('used')); bgGrid.forEach(c => c.classList.remove('used'));
       (e.used || []).forEach(i => { grid[cellFor(i, st.orient || 90)].classList.add('used'); bgGrid[cellFor(i, st.orient || 90)].classList.add('used') });
-      if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : '') }); drawMsgs();
+      const sig = 'SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : ''), pt = e.ok && !e.dup ? PART.exec(e.text) : null;
+      if (pt) { const key = e.from + pt[1] + pt[3], n = +pt[3];
+        let m = null; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'in' && msgs[i].grp === key && !msgs[i].whole) { m = msgs[i]; break }
+        if (!m) { m = { dir:'in', from:e.from, grp:key, got:{}, time:now() }; msgs.push(m) }
+        m.got[pt[2]] = pt[4]; const have = Object.keys(m.got).length;
+        m.text = Array.from({ length:n }, (_, i) => m.got[i + 1] !== undefined ? m.got[i + 1] : ' … ').join('');
+        m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
+        line(m.whole ? 'Message from ' + e.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + e.from + '. The rest is coming.', 5000);
+        if (m.whole && auto && !/^COPY/i.test(m.text)) send('COPY: ' + m.text) }
+      else if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · ' + sig }); drawMsgs();
         line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
         if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
