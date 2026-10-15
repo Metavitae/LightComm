@@ -185,7 +185,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
         <li>Both phones: open <b>Work test</b>.</li>
         <li>Phone you leave behind: <b>Auto-answer: On</b> (below), then <b>Listen → Find</b>.</li>
         <li>Walk away with the other phone. It beeps when it sees the blinking one.</li>
-        <li>Stand where it beeps fast. Tap <b>OK</b>. Wait for <b>got it</b>, then <b>COPY: OK</b>.</li>
+        <li>Stand where it beeps fast. Tap <b>OK</b>. Wait for <b>got it</b>, then <b>(COPY) OK</b>.</li>
       </ol>
     </div>
     <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
@@ -196,7 +196,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       <button data-b="camera" onclick="setBack('camera')">Camera</button><button data-b="zones" onclick="setBack('zones')">Zones</button><button data-b="off" onclick="setBack('off')">Off</button></div></div>
     <div><div class="cap">NIGHT LEVEL · <span id="nightPct"></span></div><input type="range" min="2" max="100" id="night" oninput="setNight(this.value)"></div>
     <div><div class="cap">TEST · AUTO-ANSWER</div>
-      <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "COPY: …".</div>
+      <div style="font-size:15px;color:var(--dim);margin:6px 0 8px;line-height:1.35">For testing alone: this phone answers every message it reads with "(COPY) …".</div>
       <div class="seg"><button id="autoOff" onclick="setAuto(false)">Off</button><button id="autoOn" onclick="setAuto(true)">On</button></div></div>
     <div><div class="cap">THIS CHAT'S KEY WORDS</div><div style="font-size:18px;margin-top:6px" id="keyShow">-</div></div>
     <div class="cap" style="line-height:1.6">THIS STATION · <span id="me2"></span><br>TEST VERSION · NOT FOR SAFETY USE</div>
@@ -275,6 +275,8 @@ function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
 // one send (80 bytes) and each get their own "got it". Each part starts with "~" + group letter + "part/parts ",
 // e.g. "~c2/4 ". A miss resends only the parts not delivered; the other phone joins the parts into one message.
 // A message that fits in one send goes exactly as before (no tag).
+// Auto-answer copies start with "(COPY) " (founder Oct 15: in parentheses, so a typed "copy that" is still answered). Never answered: no loops.
+const COPY = /^\(COPY\) /;
 const PART = /^~([a-z])([1-9])\/([1-9]) ([\s\S]*)$/;
 function splitParts(text){ if (LC.bytes(text) <= 80) return [text];
   const g = 'abcdefghijklmnopqrstuvwxyz'[store.get('lc.grp', 0) % 26]; store.set('lc.grp', store.get('lc.grp', 0) + 1);
@@ -356,10 +358,10 @@ function tick(){
         m.text = Array.from({ length:n }, (_, i) => m.got[i + 1] !== undefined ? m.got[i + 1] : ' … ').join('');
         m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
         line(m.whole ? 'Message from ' + e.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + e.from + '. The rest is coming.', 5000);
-        if (m.whole && auto && !/^COPY/i.test(m.text)) send('COPY: ' + m.text) }
+        if (m.whole && auto && !COPY.test(m.text)) send('(COPY) ' + m.text) }
       else if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · ' + sig }); drawMsgs();
         line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
-        if (auto && !/^COPY/i.test(e.text)) send('COPY: ' + e.text) }
+        if (auto && !COPY.test(e.text)) send('(COPY) ' + e.text) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
   }

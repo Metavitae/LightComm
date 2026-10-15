@@ -1176,7 +1176,7 @@ class MainActivity : Activity() {
         }
         var aimCalls = 0
         // Auto-answer (founder alone with both phones): the phone left behind answers every message it reads
-        // with "COPY: <text>", so the person far away gets written replies too. Never answers a COPY (no loops).
+        // with "(COPY) <text>", so the person far away gets written replies too. Never answers a COPY (no loops).
         var autoAnswer = false
         talk.watchFind = true
         talk.events = object : Talk.Events {
@@ -1201,7 +1201,7 @@ class MainActivity : Activity() {
                     if (r.snr < 7) " · weak: move closer or change the light" else ""
                 if (r.ok && !dup) {
                     addLine("← ${r.text}", RED, 22f); tone?.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 400)
-                    if (autoAnswer && !r.text.startsWith("COPY")) send("COPY: ${r.text}")
+                    if (autoAnswer && !r.text.startsWith("(COPY) ")) send("(COPY) ${r.text}")
                 }
                 else if (!r.ok) addLine("← (saw a message, could not read it: asked again)", DIM, 14f)
             }
