@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Chat's widget boards 18-19, red night: pill, line of light, Jost ExtraBold title, JetBrains Mono caption. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_bg_banner">
+  <!-- Founder Oct 14: our banner (logo kit v3 social banner) when there is no news; status when there is. -->
+  <ImageView android:id="@+id/widget_banner" android:layout_width="match_parent" android:layout_height="match_parent"
+      android:padding="6dp" android:scaleType="fitCenter" android:src="@drawable/widget_banner"
+      android:contentDescription="LightComm, messages made of light" />
+  <LinearLayout android:id="@+id/widget_status" android:visibility="gone"
+    android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="horizontal" android:gravity="center_vertical"
-    android:background="@drawable/widget_bg"
     android:paddingStart="18dp" android:paddingEnd="18dp" android:paddingTop="14dp" android:paddingBottom="14dp">
     <ImageView android:layout_width="26dp" android:layout_height="52dp" android:src="@drawable/ic_light_line" android:contentDescription="LightComm" />
     <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
@@ -17,3 +23,4 @@
             android:fontFamily="@font/jetbrains_mono" android:letterSpacing="0.1" android:maxLines="1" android:ellipsize="end" />
     </LinearLayout>
 </LinearLayout>
+</FrameLayout>
