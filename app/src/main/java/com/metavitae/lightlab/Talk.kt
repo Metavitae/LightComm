@@ -55,6 +55,8 @@ class Talk(
         fun problem(text: String) {}
         /** How well the other phone's Find pattern is seen now (0..1), about every 0.7 s while listening. */
         fun aim(score: Double) {}
+        /** Message k was stopped by the person (to edit it): nothing more is sent for it. */
+        fun stopped(k: Int) {}
     }
     @Volatile var events: Events? = null
     /** Also look for the other phone's Find pattern while listening (Field screen). */
@@ -64,7 +66,17 @@ class Talk(
 
     /** Messages to send: the start list, plus any added later (Field screen). */
     private val box: MutableList<String> = java.util.Collections.synchronizedList(ArrayList(o.outbox))
-    fun enqueue(text: String) { box.add(text) }
+    /** Adds a message; returns its number k (from 1), used by sending/sent/stopped and stopMessage. */
+    fun enqueue(text: String): Int = synchronized(box) { box.add(text); box.size }
+    /** Messages the person stopped to edit them (numbers k). */
+    private val stoppedK: MutableSet<Int> = java.util.Collections.synchronizedSet(HashSet())
+    @Volatile private var sendingK = 0
+    /**
+     * Stop message k (Oct 14, founder: stop it so it can be edited). Still waiting: it is skipped. Being sent:
+     * the light goes off at once; the other phone refuses a cut-off message (check bytes), never a wrong text.
+     * Fully sent and waiting for "got it": a got-it that still arrives counts (it was delivered); otherwise no more tries.
+     */
+    fun stopMessage(k: Int) { stoppedK.add(k); if (sendingK == k) sender.running = false }
     fun waiting(): Int = box.size - next
     /** How the camera sensor is turned (for drawing the zone map over the preview). */
     val sensorOrientation: Int get() = cam?.sensorOrientation ?: 90
@@ -199,10 +211,18 @@ class Talk(
             }
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
+            if (next < box.size && (next + 1) in stoppedK) {
+                log("# message ${next + 1} stopped by the person before it was sent\n")
+                events?.stopped(next + 1); next++; continue
+            }
             if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val text = box[next]
                 val (ok, n, round) = deliver(text, next + 1)
+                if (!ok && round < 0) {
+                    log("# message ${next + 1} stopped by the person after $n tries\n")
+                    events?.stopped(next + 1); next++; quietSince = now(); continue
+                }
                 events?.sent(next + 1, text, ok, n, round)
                 // After "got it", the other side gets the first turn to answer (Oct 14: both phones kept sending at once).
                 if (ok && !o.turns) { quietSince = now() + REPLY_PRIORITY; sendNow = false }
@@ -251,12 +271,16 @@ class Talk(
         var fullNonce = -1
         for (attempt in 1..o.tries) {
             if (!alive) break
+            if (k in stoppedK) return Triple(false, attempt - 1, -1.0)
             val mode = BrightFormat.MODES[if (o.auto && li >= 0) ladder[li] else o.startMode]
             show("Message $k, try $attempt: sending in ${mode.name}${if (useShort) ", short opening" else ""}...")
             events?.sending(k, text, attempt, mode, useShort)
             closeCam()
             rx.replies.clear()
+            if (k in stoppedK) { openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
+            sendingK = k
             val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce) { }
+            sendingK = 0
             val sendEnd = now()
             if (!useShort) fullNonce = s.nonce
             rx.expectRate = mode.perSec
@@ -271,6 +295,12 @@ class Talk(
                 }
             }
             rx.expect = -1
+            // Stopped by the person: a got-it that still came means it was delivered; otherwise stop here.
+            if (k in stoppedK && got != true) {
+                log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,STOPPED BY THE PERSON,0.0,0.0,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
+                    mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, text.replace("\"", "'")))
+                return Triple(false, attempt, -1.0)
+            }
             val outcome = when { s.failure != null -> "SEND FAILED: ${s.failure}"; got == true -> "GOT IT"; got == false -> "COULD NOT READ"; else -> "NO REPLY" }
             log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,%s,%.1f,%.1f,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
                 mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, outcome, seenAfter, if (got == true) now() - t0 else 0.0, text.replace("\"", "'")))

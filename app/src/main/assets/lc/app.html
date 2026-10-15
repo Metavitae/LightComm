@@ -49,6 +49,7 @@ button{cursor:pointer}
 .out.failed .bub{background:transparent;color:var(--dim);border:1px solid var(--line)}
 .meta{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);margin:4px 4px 0;letter-spacing:.04em}
 .out .meta{text-align:right}
+.stopbtn{display:block;margin:6px 0 0 auto;min-height:36px;padding:0 14px;border:1px solid var(--ink);border-radius:18px;background:transparent;color:var(--ink);font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:500;letter-spacing:.08em}
 .who{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);margin:0 4px 4px}
 #lightnet{margin:10px 16px 0;display:flex;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;min-height:52px}
 #lnText{font-size:16px;line-height:1.25}
@@ -208,7 +209,7 @@ const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, fi
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
                 set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
-let cur = null, msgs = [], session = 0, auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
+let cur = null, msgs = [], auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
 const me = LC.phone(); $('me').textContent = me.toUpperCase(); $('me2').textContent = me.toUpperCase();
 
 function show(id){ const prev = document.querySelector('.view.on'); if (prev && prev.id !== id) history.push(prev.id);
@@ -254,7 +255,7 @@ function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKe
 
 // ---------- chat ----------
 function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
-function openChat(c){ cur = c; session = 0; msgs = store.get('lc.msgs.' + c.id, []);
+function openChat(c){ cur = c; msgs = store.get('lc.msgs.' + c.id, []);
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
   $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat') }
 function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
@@ -265,9 +266,17 @@ function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
     const b = document.createElement('div'); b.className = 'bub'; b.textContent = m.text; d.appendChild(b);
     const t = document.createElement('div'); t.className = 'meta'; t.textContent = m.meta || ''; d.appendChild(t);
     if (m.dir === 'out' && m.state === 'failed') d.onclick = () => { m.state = 'pending'; enqueue(m) };
+    // Founder Oct 14: a message being sent (or waiting) can be stopped and edited.
+    if (m.dir === 'out' && m.state === 'pending' && m.k) { const s = document.createElement('button'); s.className = 'stopbtn';
+      s.textContent = 'STOP · EDIT'; s.setAttribute('aria-label', 'Stop sending and edit'); s.onclick = ev => { ev.stopPropagation(); stopEdit(m) }; d.appendChild(s) }
     box.appendChild(d) });
   box.scrollTop = box.scrollHeight; save() }
-function enqueue(m){ session++; m.k = session; m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…'; LC.send(m.text); drawMsgs() }
+function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…'; m.k = LC.send(m.text); drawMsgs() }
+// Stop: the light goes off at once, the message leaves the chat and its text goes back in the typing box.
+const stoppedMsgs = {};
+function stopEdit(m){ LC.stop(m.k); stoppedMsgs[m.k] = m; const i = msgs.indexOf(m); if (i >= 0) msgs.splice(i, 1);
+  const b = $('box'), was = b.value.trim(); b.value = was ? m.text + ' ' + was : m.text; drawMsgs(); b.focus();
+  line('Stopped. Change the message and send it again.', 5000) }
 function send(text){ if (!cur || !text) return; const m = { dir:'out', text, time:now() }; msgs.push(m); enqueue(m) }
 function sendBox(){ const v = $('box').value.trim(); if (v) { send(v); $('box').value = '' } }
 function bySession(k){ for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'out' && msgs[i].k === k && msgs[i].state === 'pending') return msgs[i]; return null }
@@ -301,6 +310,11 @@ function tick(){
   for (const e of st.events) {
     if (e.type === 'sending') { const m = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
       line(e.attempt > 1 ? 'No answer yet. Sending again' + (e.perSec < 30 ? ', slower.' : '.') : 'Sending as light. Keep the phone still.') }
+    else if (e.type === 'stopped') { delete stoppedMsgs[e.k] }
+    else if (e.type === 'sent' && e.ok && stoppedMsgs[e.k]) {
+      // Stopped too late: the other phone had already read it and said "got it".
+      const m = stoppedMsgs[e.k]; delete stoppedMsgs[e.k]; m.state = ''; m.meta = 'ALREADY ARRIVED BEFORE THE STOP · GOT IT'; msgs.push(m); drawMsgs();
+      line('It had already arrived. Delivered.', 6000) }
     else if (e.type === 'sent') { const m = bySession(e.k); if (m) { m.state = e.ok ? '' : 'failed';
         m.meta = e.ok ? 'SENT AS LIGHT · ' + Math.round(e.seconds) + ' S · GOT IT' + (e.tries > 1 ? ' · ' + e.tries + ' TRIES' : '') : 'NOT DELIVERED · TAP TO SEND AGAIN'; drawMsgs() }
       line(e.ok ? 'Got it. Delivered.' : 'Not delivered. Move closer or change the light, then tap the message.', 6000) }

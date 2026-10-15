@@ -123,6 +123,7 @@ class LightCommActivity : Activity() {
                 widget(if (ok) "Delivered" else "Not delivered", chatName); phase = "listening"; push("sent", "k" to k, "ok" to ok, "tries" to tries, "seconds" to seconds)
                 cue(if (ok) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_NACK, 300)
             }
+            override fun stopped(k: Int) { widget("Listening", chatName); phase = "listening"; push("stopped", "k" to k) }
             override fun heard(r: BrightDecoder.Result, dup: Boolean) {
                 val zones = r.blocks.count { it < BrightListener.NB * BrightListener.NC }
                 val fine = r.blocks.count { it >= BrightListener.NCH }
@@ -151,7 +152,10 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun open(key: String) = runOnUiThread { startTalk(key) }
         @JavascriptInterface fun chatName(name: String) { chatName = name; widget("Listening", name) }
         @JavascriptInterface fun close() = runOnUiThread { stopTalk() }
-        @JavascriptInterface fun send(text: String) { talk?.enqueue(text.take(80)) }
+        /** Returns the message's number k (0 = not listening), so the page can follow and stop it. */
+        @JavascriptInterface fun send(text: String): Int = talk?.enqueue(text.take(80)) ?: 0
+        /** Stop message k so the person can edit it (the page puts its text back in the typing box). */
+        @JavascriptInterface fun stop(k: Int) { talk?.stopMessage(k) }
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
         @JavascriptInterface fun setSounds(s: String) { sounds = s }
