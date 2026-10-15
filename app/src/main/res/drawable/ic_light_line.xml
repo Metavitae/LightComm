@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The line of light (the LightComm mark from the approved opening, as drawn on Chat's widget board). -->
+<!-- The line of light, as on Chat's widget boards 18-19: a thin line fading in from the top into a glowing dot. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="48dp" android:viewportWidth="24" android:viewportHeight="48">
-    <path android:pathData="M12,2 L12,36" android:strokeColor="#FF9477" android:strokeAlpha="0.25" android:strokeWidth="2.4" android:strokeLineCap="round" />
-    <path android:pathData="M12,18 L12,36" android:strokeColor="#FF9477" android:strokeAlpha="0.7" android:strokeWidth="2.4" android:strokeLineCap="round" />
-    <path android:pathData="M12,40 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" android:fillColor="#FF9477" android:fillAlpha="0.35" />
-    <path android:pathData="M12,40 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0" android:fillColor="#FF9477" />
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="26dp" android:height="52dp" android:viewportWidth="24" android:viewportHeight="48">
+    <path android:pathData="M12,2 L12,36" android:strokeWidth="2.4" android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient android:type="linear" android:startX="12" android:startY="2" android:endX="12" android:endY="36"
+                android:startColor="#1AFF9477" android:endColor="#FFFF9477" />
+        </aapt:attr>
+    </path>
+    <!-- Glow around the dot (the board blurs it; a soft radial fade draws the same). -->
+    <path android:pathData="M12,40 m-9,0 a9,9 0 1,0 18,0 a9,9 0 1,0 -18,0">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial" android:centerX="12" android:centerY="40" android:gradientRadius="9"
+                android:startColor="#CCFF9477" android:centerColor="#40FF9477" android:endColor="#00FF9477" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M12,40 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0" android:fillColor="#FFFF9477" />
 </vector>

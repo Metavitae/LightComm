@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- No timed refresh (updatePeriodMillis 0): the app updates the widget only when something happens. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="250dp" android:minHeight="70dp"
+    android:minWidth="250dp" android:minHeight="80dp"
     android:targetCellWidth="4" android:targetCellHeight="1"
-    android:updatePeriodMillis="0" android:resizeMode="horizontal"
-    android:widgetCategory="home_screen" android:initialLayout="@layout/widget_lightcomm"
+    android:updatePeriodMillis="0" android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" android:initialLayout="@layout/widget_lightcomm" android:previewLayout="@layout/widget_lightcomm"
     android:description="@string/widget_description" />
