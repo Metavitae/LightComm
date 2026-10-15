@@ -78,7 +78,7 @@ class BrightSender(private val ctx: Context) {
      * nonce >= 0: send with this nonce (a resend of the same full message).
      */
     fun send(text: String, mode: BrightFormat.Mode, pass: String, beaconSec: Double,
-             link: BrightFormat.Link? = null, seq: Int = 0, nonce0: Int = -1, progress: (String) -> Unit): Sent {
+             link: BrightFormat.Link? = null, seq: Int = 0, nonce0: Int = -1, stopped: () -> Boolean = { false }, progress: (String) -> Unit): Sent {
         val cm = ctx.getSystemService(CameraManager::class.java)
         val id = torchCamera(ctx)?.first ?: return Sent(text, mode, 0, 0, 0, 0.0, Stats(emptyList()), Stats(emptyList()), 0.0, "no flashlight")
         try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
@@ -91,7 +91,7 @@ class BrightSender(private val ctx: Context) {
         val startMs = SystemClock.elapsedRealtime() + 300
         fun play(list: List<Pair<Double, Boolean>>, offset: Double, measure: Boolean) {
             for ((t, on) in list) {
-                if (!running || failure != null) return
+                if (!running || failure != null || stopped()) return
                 val target = t0 + ((offset + t) * 1e9).toLong()
                 waitUntil(target)
                 if (on == state) continue
@@ -125,7 +125,7 @@ class BrightSender(private val ctx: Context) {
         progress("Sending \"${text.take(20)}\" in ${mode.name} (shortest pulse $pmin ms)...")
         play(BrightFormat.switches(s.wave, sync.n, s.wave.n, startState = state), offset, true)
         try { cm.setTorchMode(id, false) } catch (_: Exception) {}
-        val ok = running
+        val ok = running && !stopped()
         running = false
         return Sent(text, mode, nonce, pmin, startMs, offset + s.wave.end, Stats(late), Stats(calls.map { it * 1e6 }),
             calls.firstOrNull()?.times(1e6) ?: 0.0, failure ?: if (!ok) "stopped" else null)

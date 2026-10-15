@@ -279,7 +279,8 @@ class Talk(
             rx.replies.clear()
             if (k in stoppedK) { openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
             sendingK = k
-            val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce) { }
+            // Also asked before every switch: a stop that lands before the sender starts is never overwritten.
+            val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce, { k in stoppedK }) { }
             sendingK = 0
             val sendEnd = now()
             if (!useShort) fullNonce = s.nonce
