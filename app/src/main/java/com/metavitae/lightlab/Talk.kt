@@ -7,6 +7,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Taking turns inside the app, no computer in the loop (Oct 14).
@@ -115,7 +116,7 @@ class Talk(
         val before = rx.newest()
         val c = CamSession(act, camId, tv) { }
         c.manual = true; c.fps = 30; c.expNs = (exp * 1e9).toLong(); c.iso = iso
-        c.onError = { e -> log("# camera problem: $e\n") }
+        watch(c)
         c.zoneSink = { ts, fine -> rx.add(ts, fine) }
         cam = c
         c.open {}
@@ -159,12 +160,33 @@ class Talk(
         return now() - t0
     }
 
+    /** Oct 15 (23:29): the POCO's camera stopped with "camera error 3" and the app only wrote it down: deaf until restarted. */
+    @Volatile private var camLost = ""
+    private var lostTries = 0
+    private var lastReopen = 0.0
+    private fun watch(c: CamSession) {
+        c.onError = { e -> log("# camera problem: $e\n"); if (cam === c) camLost = e }
+    }
+
+    /** The camera in use stopped: open it again (every 5 s at most; the person is told after 3 tries). True = tried. */
+    private fun reopenIfLost(): Boolean {
+        if (camLost.isEmpty() || now() - lastReopen < 5) return false
+        lostTries++
+        log("# camera lost ($camLost): opening it again, try $lostTries\n")
+        camLost = ""; lastReopen = now()
+        val before = rx.newest()
+        closeCam(); openCam()
+        if (camLost.isEmpty() && rx.newest() > before) { log("# camera back after try $lostTries\n"); lostTries = 0 }
+        else if (lostTries == 3) events?.problem("Camera lost: keep LightComm open on the screen. Still trying.")
+        return true
+    }
+
     /** Close the camera, open it with automatic brightness for a moment (as the Camera app does), then fixed settings again. True = not black now. */
     private fun restartAuto(): Boolean {
         closeCam()
         val c2 = CamSession(act, camId, tv) { }
         c2.manual = false; c2.fps = 30
-        c2.onError = { e -> log("# camera problem: $e\n") }
+        watch(c2)
         c2.zoneSink = { ts, fine -> rx.add(ts, fine) }
         cam = c2; c2.open {}
         Thread.sleep(1500)
@@ -235,6 +257,7 @@ class Talk(
         while (alive) {
             val r = rx.heard.poll(200, TimeUnit.MILLISECONDS)
             if (r != null) { answer(r); quietSince = now(); if (!sendNow) continue }
+            if (reopenIfLost()) { quietSince = now(); continue }
             if (findSec > 0 && !rx.hearing) {
                 val sec = findSec; findSec = 0
                 log("# find: blinking the find pattern for $sec s\n")
@@ -304,6 +327,29 @@ class Talk(
         openCam()
     }
 
+    /** Oct 16 (04:51): a stopped message's short-opening number went to the next message, same nonce. If the other
+     *  phone had read the stopped one, it would take the next as a repeat. The receiver tries lastSeq .. +2, so skipping one is fine. */
+    private fun usedUp(useShort: Boolean, seq: Int, blinked: Boolean) {
+        if (useShort && blinked && outLink != null) outLink = outLink!!.copy(lastSeq = seq)
+    }
+
+    /** What the camera showed while waiting for a reply, looked at about 5 times a second. */
+    private inner class WaitLook {
+        var n = 0; var stalled = 0; var black = 0; var heard = false
+        var bgMin = Double.MAX_VALUE; var bgMax = 0.0; var topMin = Double.MAX_VALUE; var topMax = 0.0
+        private var last = rx.newest()
+        fun look() {
+            val t = rx.newest(); val bg = rx.background(); val top = rx.brightTop()
+            n++; if (t == last) stalled++; last = t
+            if (blackCamera()) black++
+            if (rx.hearing) heard = true
+            bgMin = min(bgMin, bg); bgMax = max(bgMax, bg); topMin = min(topMin, top); topMax = max(topMax, top)
+        }
+        fun line(): String = if (n == 0) "# while waiting: camera not looked at\n" else String.format(Locale.US,
+            "# while waiting: %d looks, no new picture %d, pure black %d, background %.1f-%.1f, brightest spots %.1f-%.1f, something heard: %s\n",
+            n, stalled, black, bgMin, bgMax, topMin, topMax, if (heard) "yes" else "no")
+    }
+
     /** Send one message until "got it" or out of tries. Returns (delivered, tries used, seconds from first send to got-it seen). */
     private fun deliver(text: String, k: Int): Triple<Boolean, Int, Double> {
         val t0 = now()
@@ -312,13 +358,13 @@ class Talk(
         var fullNonce = -1
         for (attempt in 1..o.tries) {
             if (!alive) break
-            if (k in stoppedK) return Triple(false, attempt - 1, -1.0)
+            if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); return Triple(false, attempt - 1, -1.0) }
             val mode = BrightFormat.MODES[if (o.auto && li >= 0) ladder[li] else o.startMode]
             show("Message $k, try $attempt: sending in ${mode.name}${if (useShort) ", short opening" else ""}...")
             events?.sending(k, text, attempt, mode, useShort)
             closeCam()
             rx.replies.clear()
-            if (k in stoppedK) { openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
+            if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
             sendingK = k
             // Also asked before every switch: a stop that lands before the sender starts is never overwritten.
             val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce, { k in stoppedK }) { }
@@ -329,18 +375,24 @@ class Talk(
             rx.expect = s.nonce
             val listenAfter = openCam()
             var got: Boolean? = null; var seenAfter = 0.0
+            val w = WaitLook()
             if (s.failure == null) {
                 val until = sendEnd + o.waitReply
                 while (alive && now() < until) {
+                    w.look()
+                    if (reopenIfLost()) continue
                     val rep = rx.replies.poll(200, TimeUnit.MILLISECONDS) ?: continue
                     if (rep.first == s.nonce) { got = rep.second; seenAfter = now() - sendEnd; break }
                 }
             }
+            // Oct 16 (05:04): the POCO missed 3 got-its in a row, yet the black check found nothing. Write down what it saw.
+            if (s.failure == null && got != true) log(w.line())
             rx.expect = -1
             // Stopped by the person: a got-it that still came means it was delivered; otherwise stop here.
             if (k in stoppedK && got != true) {
                 log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,STOPPED BY THE PERSON,0.0,0.0,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
                     mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, text.replace("\"", "'")))
+                usedUp(useShort, seq, true)
                 return Triple(false, attempt, -1.0)
             }
             val outcome = when { s.failure != null -> "SEND FAILED: ${s.failure}"; got == true -> "GOT IT"; got == false -> "COULD NOT READ"; else -> "NO REPLY" }
@@ -362,6 +414,7 @@ class Talk(
             // No reply: maybe the other phone was sending too. Wait a random extra moment so the two drift apart.
             if (got == null && !o.turns) Thread.sleep((1000 + Math.random() * 4000).toLong())
         }
+        usedUp(useShort, seq, true)
         show("Message $k NOT delivered after ${o.tries} tries")
         return Triple(false, o.tries, 0.0)
     }
