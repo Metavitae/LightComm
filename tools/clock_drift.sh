@@ -1,8 +1,8 @@
 #!/bin/bash
 # Clock drift between the two test phones (Chat NOTE 2, Oct 14): every 10 min, each phone's clock vs this
 # computer's clock (adb round trip measured, half of it taken as the error bar). Passive: nothing blinks.
-#   tools/clock_drift.sh   -> results/clock/drift.csv  (time, phone, phone_minus_computer_ms, round_trip_ms)
-OUT=$(dirname "$0")/../results/clock/drift.csv
+#   tools/clock_drift.sh [file]  -> results/clock/drift.csv by default  (time, phone, phone_minus_computer_ms, round_trip_ms)
+OUT=${1:-$(dirname "$0")/../results/clock/drift.csv}
 [ -f "$OUT" ] || echo "computer_time,phone,phone_minus_computer_ms,round_trip_ms" > "$OUT"
 while true; do
   for s in $(adb devices | awk 'NR>1 && $2=="device"{print $1}'); do
