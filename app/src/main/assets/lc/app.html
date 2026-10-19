@@ -332,7 +332,14 @@ function doFind(){ if (findTimer) return; findCount = 10;
 const LONG = ' LONG MESSAGE. WE ARE AT THE NORTH GATE WITH TWO PEOPLE, ONE HAS A HURT ANKLE. PLEASE BRING THE TRUCK TO THE ROAD BY THE BIG TREE AND KEEP YOUR LIGHTS ON SO WE CAN FIND YOU. THANK YOU, SEE YOU SOON.';
 const TESTS = {
   POCO: [['A1','plain','A1 HELLO FROM THE POCO'], ['A2','plain','A2 HELLO FROM THE POCO'], ['A3','plain','A3 HELLO FROM THE POCO'],
-    ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E2','plain','E2' + LONG], ['D1','cam','D1 CAMERA CAME BACK']],
+    ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E2','plain','E2' + LONG],
+    // Oct 19 handheld (Sol's question: does a held phone fail from moving, or from weak light?). This phone stays on its stand;
+    // the person holds the 8T 1-2 m away (it sees this phone's light strongly, so a failure there is the hand).
+    ['H1','hand','H1 HELD STEADY', 'H: tap TEST, then pick up the 8T and stand 1-2 m (3-6 ft) from this phone, 8T camera pointed at it. Sending starts 15 s after the tap.'],
+    ['H2','plain','H2 HELD STEADY'], ['H3','plain','H3 HELD STEADY'],
+    ['H4','hand','H4 HELD NATURALLY', 'H: tap TEST, then hold the 8T naturally, like reading a message, not aiming, 1-2 m from this phone. Sending starts 15 s after the tap.'],
+    ['H5','plain','H5 HELD NATURALLY'], ['H6','plain','H6 HELD NATURALLY'],
+    ['D1','cam','D1 CAMERA CAME BACK']],
   '8T': [['A4','plain','A4 HELLO FROM THE 8T'], ['A5','plain','A5 HELLO FROM THE 8T'], ['A6','plain','A6 HELLO FROM THE 8T'],
     ['B3','stop','B3'], ['B4','stop','B4'], ['C3','both','C3'], ['C4','both','C4'], ['E1','plain','E1' + LONG], ['D2','cam','D2 CAMERA CAME BACK']] };
 const myTests = () => TESTS[/POCO/.test(LC.phone()) ? 'POCO' : '8T'];
@@ -342,10 +349,14 @@ const T_COUNT = 15; let tCount = 0, tCountTimer = null;
 function testLabel(){ const L = myTests(), i = store.get('lc.test.i', 0), b = $('testBtn'); if (!b) return;
   if (tCountTimer) { b.textContent = 'TEST · STARTS IN ' + tCount + ' S · TAP TO CANCEL'; return }
   b.textContent = tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
-    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + ' · CAMERA DONE? TAP' : 'TEST · START AT ' + L[i][0] }
+    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0] }
 function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
 function testTap(){ const L = myTests(); let i = store.get('lc.test.i', 0);
   if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
+  if (tStep && tStep.wait && tStep.kind === 'hand') { const s0 = tStep; s0.wait = false; s0.hold = true; tLog(s0.code + ' tapped: sending in ' + T_COUNT + ' s')
+    line('Pick up the 8T now: sending in ' + T_COUNT + ' s.', 5000)
+    setTimeout(() => { if (tStep !== s0 || !cur) return; s0.hold = false; s0.t0 = Date.now(); send(s0.text); s0.m = msgs[msgs.length - 1]; tLog(s0.code + ' sent (held in hand)'); testLabel() }, T_COUNT * 1000)
+    testLabel(); return }
   if (tStep && tStep.wait) { tStep.wait = false; tStep.t0 = Date.now(); send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(tStep.code + ' sent after the camera'); testLabel(); return }
   if (tCountTimer) { clearInterval(tCountTimer); tCountTimer = null; line('Test start cancelled.', 4000); testLabel(); return }
   if (tRun) { tPause = !tPause; testLabel(); return }
@@ -357,8 +368,9 @@ function testTap(){ const L = myTests(); let i = store.get('lc.test.i', 0);
     tRun = true; tPause = false; tLog('run started at ' + L[i][0]); startTest(); testLabel() }, 1000) }
 // Only copies that came after this test sent (the same text from an earlier run doesn't count).
 const copyOf = (text, m0) => msgs.slice(Math.max(0, msgs.indexOf(m0))).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
-function startTest(){ const [code, kind, text] = myTests()[store.get('lc.test.i', 0)];
+function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.test.i', 0)];
   tStep = { code, kind, t0: Date.now(), phase: 0 };
+  if (kind === 'hand') { tStep.text = text; tStep.wait = true; line(ask, 600000); tLog(code + ' waiting for the person (handheld)'); return }
   if (kind === 'cam') { tStep.text = text; tStep.wait = true; line(code + ': open the Camera app for about 5 s, come back here, then tap TEST.', 600000); tLog(code + ' waiting for the camera step'); return }
   tStep.text = kind === 'stop' ? code + ' STOP ME' : kind === 'both' ? code + ' FIRST' : text;
   send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started') }
@@ -367,7 +379,7 @@ function endTest(result){ const L = myTests(); tLog(tStep.code + ' ' + result + 
   store.set('lc.test.i', store.get('lc.test.i', 0) + 1); tStep = null;
   if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) line('All tests on this phone done.', 10000); testLabel(); return }
   setTimeout(() => { if (tRun && !tStep && cur) { startTest(); testLabel() } }, 5000); testLabel() }
-function testTick(){ if (!tStep || tStep.wait) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;
+function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;
   if (!cur) { tRun = false; tStep = null; testLabel(); return }   // left the chat: paused, this test runs again next time
   if (age > (s.code[0] === 'E' ? 900 : 480)) return endTest('timed out');
   if (s.kind === 'stop' && s.phase === 0 && m && m.meta && m.meta.indexOf('SENDING AS LIGHT') === 0) { s.phase = 1; s.blink = Date.now() }
