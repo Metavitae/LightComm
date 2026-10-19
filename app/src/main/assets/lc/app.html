@@ -143,6 +143,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <button class="pill" onclick="send('OK')">OK</button>
     <button class="pill" onclick="send('Need help')" style="border-color:var(--ink)">Need help</button>
     <button class="pill" onclick="send('Wait')">Wait</button>
+    <button class="pill mono" id="testBtn" onclick="testTap()">TEST</button>
     <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
   </div>
   <div id="inputRow">
@@ -257,7 +258,7 @@ function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKe
 function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
 function openChat(c){ cur = c; msgs = store.get('lc.msgs.' + c.id, []);
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
-  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat') }
+  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); testLabel() }
 function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
 function save(){ if (cur) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
 function drawMsgs(){ const box = $('msgs'); box.innerHTML = '';
@@ -325,6 +326,50 @@ function doFind(){ if (findTimer) return; findCount = 10;
     else { clearInterval(findTimer); findTimer = null; LC.find(60); line('Find: blinking for 60 s. The other phone beeps when it sees this light.', 60000) } }, 1000);
   show('vChat') }
 
+// ---------- test plan (Oct 18, founder: "I might be doing work at work"): one tap runs this phone's tests in a row ----------
+// Codes match the printed 67 ft plan. Each test waits for its copy back (auto-answer on the other phone). Where it got to
+// is kept, so a tap pauses after the current test and the next tap carries on. D (camera) needs a person: last, it waits.
+const LONG = ' LONG MESSAGE. WE ARE AT THE NORTH GATE WITH TWO PEOPLE, ONE HAS A HURT ANKLE. PLEASE BRING THE TRUCK TO THE ROAD BY THE BIG TREE AND KEEP YOUR LIGHTS ON SO WE CAN FIND YOU. THANK YOU, SEE YOU SOON.';
+const TESTS = {
+  POCO: [['A1','plain','A1 HELLO FROM THE POCO'], ['A2','plain','A2 HELLO FROM THE POCO'], ['A3','plain','A3 HELLO FROM THE POCO'],
+    ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E2','plain','E2' + LONG], ['D1','cam','D1 CAMERA CAME BACK']],
+  '8T': [['A4','plain','A4 HELLO FROM THE 8T'], ['A5','plain','A5 HELLO FROM THE 8T'], ['A6','plain','A6 HELLO FROM THE 8T'],
+    ['B3','stop','B3'], ['B4','stop','B4'], ['C3','both','C3'], ['C4','both','C4'], ['E1','plain','E1' + LONG], ['D2','cam','D2 CAMERA CAME BACK']] };
+const myTests = () => TESTS[/POCO/.test(LC.phone()) ? 'POCO' : '8T'];
+let tRun = false, tPause = false, tStep = null;
+function testLabel(){ const L = myTests(), i = store.get('lc.test.i', 0), b = $('testBtn'); if (!b) return;
+  b.textContent = tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
+    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + ' · CAMERA DONE? TAP' : 'TEST · START AT ' + L[i][0] }
+function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
+function testTap(){ const L = myTests(); let i = store.get('lc.test.i', 0);
+  if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
+  if (tStep && tStep.wait) { tStep.wait = false; tStep.t0 = Date.now(); send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(tStep.code + ' sent after the camera'); testLabel(); return }
+  if (tRun) { tPause = !tPause; testLabel(); return }
+  if (i >= L.length) { i = 0; store.set('lc.test.i', 0) }
+  tRun = true; tPause = false; tLog('run started at ' + L[i][0]); startTest(); testLabel() }
+// Only copies that came after this test sent (the same text from an earlier run doesn't count).
+const copyOf = (text, m0) => msgs.slice(Math.max(0, msgs.indexOf(m0))).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
+function startTest(){ const [code, kind, text] = myTests()[store.get('lc.test.i', 0)];
+  tStep = { code, kind, t0: Date.now(), phase: 0 };
+  if (kind === 'cam') { tStep.text = text; tStep.wait = true; line(code + ': open the Camera app for about 5 s, come back here, then tap TEST.', 600000); tLog(code + ' waiting for the camera step'); return }
+  tStep.text = kind === 'stop' ? code + ' STOP ME' : kind === 'both' ? code + ' FIRST' : text;
+  send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started') }
+function endTest(result){ const L = myTests(); tLog(tStep.code + ' ' + result + ' after ' + Math.round((Date.now() - tStep.t0) / 1000) + ' s');
+  line('Test ' + tStep.code + ': ' + result + '.', 6000);
+  store.set('lc.test.i', store.get('lc.test.i', 0) + 1); tStep = null;
+  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) line('All tests on this phone done.', 10000); testLabel(); return }
+  setTimeout(() => { if (tRun && !tStep && cur) { startTest(); testLabel() } }, 5000); testLabel() }
+function testTick(){ if (!tStep || tStep.wait) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;
+  if (!cur) { tRun = false; tStep = null; testLabel(); return }   // left the chat: paused, this test runs again next time
+  if (age > (s.code[0] === 'E' ? 900 : 480)) return endTest('timed out');
+  if (s.kind === 'stop' && s.phase === 0 && m && m.meta && m.meta.indexOf('SENDING AS LIGHT') === 0) { s.phase = 1; s.blink = Date.now() }
+  if (s.kind === 'stop' && s.phase === 1 && Date.now() - s.blink >= 15000) {
+    stopEdit(m); $('box').value = ''; s.text = s.code + ' AFTER THE STOP'; send(s.text); s.m = msgs[msgs.length - 1]; s.phase = 2; tLog(s.code + ' stopped after 15 s of blinking, sent the next at once'); return }
+  if (s.kind === 'both' && s.phase === 0 && m && m.state === '' ) { s.text = s.code + ' SECOND'; send(s.text); s.m = msgs[msgs.length - 1]; s.phase = 2; tLog(s.code + ' got it: sent SECOND at once'); return }
+  if ((s.kind === 'stop' || s.kind === 'both') && s.phase < 2) { if (m && m.state === 'failed') endTest('first message not delivered'); return }
+  if (copyOf(s.text, s.m)) return endTest('done, copy back');
+  if (s.m && s.m.state === 'failed') endTest('not delivered') }
+
 // ---------- live loop ----------
 function tick(){
   let st; try { st = JSON.parse(LC.poll()) } catch (e) { return }
@@ -365,6 +410,7 @@ function tick(){
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
   }
+  testTick();
   const sending = st.phase === 'sending', hearing = !!st.hearing;
   $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (auto ? ' · AUTO-ANSWER ON' : '');
   $('hold').style.display = hearing && !sending ? 'block' : 'none';
