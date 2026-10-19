@@ -38,7 +38,7 @@ class StopDropTest {
     }
 
     /** Films the switches (light on a 4x4 patch of the 64x48 grid), scanning like the talk loop does; returns log lines and results read. */
-    private fun film(sw: List<Pair<Double, Boolean>>, until: Double, seed: Int): Pair<List<String>, List<BrightDecoder.Result>> {
+    private fun film(sw: List<Pair<Double, Boolean>>, until: Double, seed: Int, probe: ((Double, BrightListener) -> Unit)? = null): Pair<List<String>, List<BrightDecoder.Result>> {
         val r = Random(seed)
         val rx = BrightListener(android.content.ContextWrapper(null), pass, exp)
         rx.readyAt = 1.0
@@ -51,6 +51,7 @@ class StopDropTest {
             val fine = FloatArray(zx * zy) { 30f + 1.5f * (r.nextFloat() - 0.5f) }
             for (y in 20 until 24) for (x in 30 until 34) fine[y * zx + x] += (120 * share).toFloat()
             rx.add((t * 1e9).toLong(), fine)
+            probe?.invoke(t, rx)
             if (t >= nextScan) {
                 lines += rx.scan()
                 while (true) got += rx.heard.poll() ?: break
@@ -86,5 +87,31 @@ class StopDropTest {
             n++
         }
         println("$n whole sends read, none dropped")
+    }
+
+    @Test fun busy_sees_the_other_phone_mid_send() {
+        // Oct 19 (67 ft): a phone that opens its camera in the middle of the other's send sees no sync, so it never
+        // noticed it. busy() must see the blinking where the last read send was, and stay quiet when the light is off.
+        for (m in listOf(0, 5, 6)) {
+            val mode = BrightFormat.MODES[m]
+            val first = send("A1 HELLO FROM THE POCO", mode, 4444, 2.0)
+            val gapA = first.last().first + 2.0; val secondAt = gapA + 6.0
+            val second = send("(COPY) B1 STOP ME", mode, 5555, secondAt)
+            val inSend = ArrayList<Boolean>(); val quiet = ArrayList<Boolean>(); val before = ArrayList<Boolean>()
+            var lastProbe = 0.0
+            film(first + second, second.last().first + 3.0, m) { t, rx ->
+                if (t - lastProbe < 0.2) return@film
+                lastProbe = t
+                when {
+                    t in 1.5..2.0 -> before += rx.busy()
+                    t in gapA..secondAt -> quiet += rx.busy()
+                    t in (secondAt + 4.0)..(second.last().first - 1.0) -> inSend += rx.busy()
+                }
+            }
+            println("mode $m: busy mid-send ${inSend.count { it }}/${inSend.size}, quiet gap ${quiet.count { it }}/${quiet.size}")
+            assertTrue("mode $m: nothing read yet = not busy", before.none { it })
+            assertTrue("mode $m: quiet gap not busy", quiet.none { it })
+            assertTrue("mode $m: busy mid-send", inSend.count { it } >= 0.9 * inSend.size)
+        }
     }
 }

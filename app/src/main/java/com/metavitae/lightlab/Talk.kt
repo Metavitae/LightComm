@@ -109,6 +109,8 @@ class Talk(
      *  each send (0-1.5 s, new every time), and giving way when the other phone is heard (at most 3 times a message). */
     private var jitter = Math.random() * 1.5
     private var giveWays = 0
+    private var busySince = 0.0
+    private var busyIgnored = false
     /** deliver() result "round" when it gave way to the other phone (-1 = stopped by the person). */
     private val GAVE_WAY = -2.0
     private fun log(s: String) = file.append(s)
@@ -285,6 +287,15 @@ class Talk(
                 log("# message ${next + 1} stopped by the person before it was sent\n")
                 events?.stopped(next + 1); next++; continue
             }
+            // Oct 19: listen before talking. The other phone's light blinking (even with no sync seen) = it is sending: let it finish.
+            // At most 30 s: something else flickering in that spot (a screen, a person waving) must not block sending for good.
+            val busy = next < box.size && !sendNow && rx.busy()
+            if (!busy) { busySince = 0.0; busyIgnored = false }
+            else if (busySince == 0.0) { log("# other phone blinking: waiting before sending\n"); busySince = now() }
+            if (busy && !busyIgnored) {
+                if (now() - busySince < 30) { quietSince = now(); continue }
+                log("# still blinking after 30 s: sending anyway\n"); busyIgnored = true
+            }
             if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap + jitter))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val text = box[next]
@@ -351,7 +362,7 @@ class Talk(
             val t = rx.newest(); val bg = rx.background(); val top = rx.brightTop()
             n++; if (t == last) stalled++; last = t
             if (blackCamera()) black++
-            if (rx.hearing) heard = true
+            if (rx.hearing || rx.busy()) heard = true
             bgMin = min(bgMin, bg); bgMax = max(bgMax, bg); topMin = min(topMin, top); topMax = max(topMax, top)
         }
         fun line(): String = if (n == 0) "# while waiting: camera not looked at\n" else String.format(Locale.US,
@@ -368,6 +379,12 @@ class Talk(
         for (attempt in 1..o.tries) {
             if (!alive) break
             if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); return Triple(false, attempt - 1, -1.0) }
+            // Oct 19: listen before a resend too. The other phone blinking now = it's talking: read and answer it first.
+            if (attempt > 1 && giveWays < 3 && rx.busy()) {
+                log("# other phone blinking before try $attempt: giving way\n")
+                usedUp(useShort, seq, true)
+                return Triple(false, attempt - 1, GAVE_WAY)
+            }
             val mode = BrightFormat.MODES[if (o.auto && li >= 0) ladder[li] else o.startMode]
             show("Message $k, try $attempt: sending in ${mode.name}${if (useShort) ", short opening" else ""}...")
             events?.sending(k, text, attempt, mode, useShort)

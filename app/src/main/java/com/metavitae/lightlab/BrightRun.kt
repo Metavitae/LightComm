@@ -288,6 +288,23 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         return p.blocks.map { w[it] } + f
     }
 
+    /** Where the other phone's light was in our last read send (blocks; NCH + fine square) and how far it swung there. */
+    @Volatile private var knownSwing: Map<Int, Double> = emptyMap()
+
+    /**
+     * Oct 19 (67 ft): both phones started at the same moment and kept sending over each other for 4 tries. Each opened
+     * its camera in the middle of the other's send, saw no sync, so "hearing" stayed false. Now: the other phone's light
+     * blinking where we last read it (sync or not) in the last `win` seconds = it is talking. False if never read it.
+     */
+    fun busy(win: Double = 1.2): Boolean {
+        val sw = knownSwing; if (sw.isEmpty()) return false
+        val now = newest(); if (now == 0.0 || readyAt == 0.0 || now - readyAt < win) return false
+        val blocks = sw.keys.filter { it < NCH }; val zones = sw.keys.filter { it >= NCH }.map { it - NCH }
+        val w = window(now - win, now); val f = fineWindow(now - win, now, zones)
+        if (w[0].t.size < win * 20) return false      // too few pictures to tell
+        return blocks.any { spread(w[it].y) > 0.4 * sw.getValue(it) } || zones.indices.any { spread(f[it].y) > 0.4 * sw.getValue(NCH + zones[it]) }
+    }
+
     /** True if the send stopped blinking: every one of its channels steady for quietSec (a stopped sender). */
     private fun wentSteady(p: Pend, now: Double): Boolean {
         val ser = pendSeries(p, now - p.quietSec, now)
@@ -483,7 +500,12 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         if (r.mode == null && now < headerDone) return emptyList()       // wait for the header at the slow speed
         hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
-        if (r.ok) { known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }.take(6) }
+        if (r.ok) {
+            known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }.take(6)
+            val bw = window(t0.first, r.endT); val fw = fineWindow(t0.first, r.endT, knownFine)
+            knownSwing = (known.associateWith { spread(bw[it].y) } + knownFine.indices.associate { NCH + knownFine[it] to spread(fw[it].y) })
+                .filterValues { it >= 1.0 }.entries.sortedByDescending { it.value }.take(4).associate { it.key to it.value }
+        }
         val line = logLine(r) + (missRecording(r)?.let { "# brightness recording of this miss saved: $it\n" } ?: "")
         heard.add(r)
         val nFine = r.blocks.count { it >= NCH }
