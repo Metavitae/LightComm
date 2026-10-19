@@ -377,6 +377,7 @@ class Talk(
         var useShort = o.short && outLink != null
         var seq = if (useShort) outLink!!.lastSeq + 1 else 0
         var fullNonce = -1
+        var shortMisses = 0
         for (attempt in 1..o.tries) {
             if (!alive) break
             if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); return Triple(false, attempt - 1, -1.0) }
@@ -390,7 +391,7 @@ class Talk(
             show("Message $k, try $attempt: sending in ${mode.name}${if (useShort) ", short opening" else ""}...")
             events?.sending(k, text, attempt, mode, useShort)
             closeCam()
-            rx.replies.clear()
+            rx.replies.clear(); rx.replyNear = 0.0
             if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
             sendingK = k
             // Also asked before every switch: a stop that lands before the sender starts is never overwritten.
@@ -413,7 +414,8 @@ class Talk(
                 }
             }
             // Oct 16 (05:04): the POCO missed 3 got-its in a row, yet the black check found nothing. Write down what it saw.
-            if (s.failure == null && got != true) log(w.line())
+            if (s.failure == null && got != true) log(w.line() + String.format(Locale.US, "# best reply match seen: %.2f (taken at %.2f, or %.2f with a clear lead)\n",
+                rx.replyNear, BrightDecoder.REPLY_SURE, BrightDecoder.REPLY_WEAK))
             // No got-it, and the other phone was blinking meanwhile: it's talking too. Let the main loop read and answer it, then resend.
             if (got == null && !(k in stoppedK) && giveWays < 3 && (w.heard || rx.hearing || rx.heard.isNotEmpty())) {
                 rx.expect = -1
@@ -440,10 +442,14 @@ class Talk(
                 return Triple(true, attempt, now() - t0)
             }
             streak = 0
-            if (got == null && useShort) {
-                // No reply at all to a short opening: maybe the link is gone on the other side. Next try: full opening.
+            if (got == null && useShort && ++shortMisses >= 2) {
+                // No reply twice to a short opening: maybe the link is gone on the other side. Next try: full opening.
+                // (Oct 19: after ONE miss the message had nearly always been read and only the reply was lost, so the
+                // same short opening again is answered "seen before"; going full at once cost 3-5 s per miss.)
                 useShort = false; outLink = null; seq = 0
                 log("# link dropped: next try uses the full opening\n")
+            } else if (got == null && useShort) {
+                log("# no reply: one more try with the same short opening\n")
             } else if (o.auto && li >= 0 && li < ladder.size - 1) { li++; log("# auto-speed: down to ${BrightFormat.MODES[ladder[li]].name}\n") }
             if (rx.hearing) Thread.sleep(500)
             // No reply: maybe the other phone was sending too. Wait a random extra moment so the two drift apart.

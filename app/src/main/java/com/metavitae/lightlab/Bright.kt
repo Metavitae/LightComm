@@ -538,6 +538,15 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         return best
     }
 
+    /** Best (start time, match) of one kind of reply to message `nonce` between from and to, with no bar (Oct 19). */
+    fun replyMatch(s: Series, from: Double, to: Double, nonce: Int, ok: Boolean, perSec: Int): Pair<Double, Double> {
+        val w = BrightFormat.replyWave(pass, nonce, ok, perSec)
+        var best = from to 0.0
+        var t0 = from
+        while (t0 <= to) { val c = corr(s, t0, w, w.end); if (c > best.second) best = t0 to c; t0 += 1.0 / 120 }
+        return best
+    }
+
     private fun timing(s: Series, t0Guess: Double, sw: BrightFormat.Wave): Chan? {
         var best = t0Guess; var bestC = -1.0
         var t = t0Guess - 0.025
@@ -873,6 +882,19 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         /** For the simulator only: the true header symbols, to print how many were misread. */
         @JvmField var debugHdr: IntArray? = null
         @JvmField var debugRate = 0
+        /**
+         * Reply decision (Oct 19: bounced off the ceiling, the POCO found the 8T's replies at 0.82-0.87 and missed about
+         * 1 in 4 just under 0.80). Sure at REPLY_SURE; inside the expected window a weaker match also counts when that kind
+         * clearly beats the other kind (a reply to another message, or a room, matches both kinds about alike).
+         * Returns true = got it, false = could not read, null = no reply.
+         */
+        @JvmField var REPLY_SURE = 0.8
+        @JvmField var REPLY_WEAK = 0.7
+        @JvmField var REPLY_MARGIN = 0.15
+        fun replyKind(gotIt: Double, couldNot: Double): Boolean? {
+            val k = gotIt >= couldNot; val b = max(gotIt, couldNot); val o = min(gotIt, couldNot)
+            return if (b >= REPLY_SURE || (b >= REPLY_WEAK && b - o >= REPLY_MARGIN)) k else null
+        }
         /** Half-width (pictures) of the windows used to follow brightness changes. */
         @JvmField var ENV_HALF = 12
         /** Largest say one coded bit gets in soft repair (in units of squared noise). */

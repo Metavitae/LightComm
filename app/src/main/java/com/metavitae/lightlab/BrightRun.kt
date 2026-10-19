@@ -249,6 +249,8 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     @Volatile var expectRate = 30
     private var replyFrom = 0.0
     private var lastReplyFine = false
+    /** Best reply match seen (either kind) since the sender last reset it: logged when no reply was taken (Oct 19). */
+    @Volatile var replyNear = 0.0
     /** Blocks that carried the last send read right (up to 6), searched for the next sync too. */
     private var known: List<Int> = emptyList()
     /** Fine squares that carried the last send read right. */
@@ -525,15 +527,22 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         val fz = flickery(from, now)
         val ws = window(from - 0.1, now) + fineWindow(from - 0.1, now, fz)
         val lively = (0 until NB * NC).sortedByDescending { variance(ws[it].y) }.take(4)
-        val hits = ((listOf(NB * NC) + lively + known).distinct() + fz.indices.map { NCH + it })
-            .mapNotNull { ch -> dec.findReply(ws[ch], from, now - replyLen - 0.2, n, perSec = rate)?.let { it to ch } }
+        // Per channel: the best "got it" and "could not read" matches; the kind is decided by BrightDecoder.replyKind.
+        val hits = ((listOf(NB * NC) + lively + known).distinct() + fz.indices.map { NCH + it }).map { ch ->
+            val g = dec.replyMatch(ws[ch], from, now - replyLen - 0.2, n, true, rate)
+            val c = dec.replyMatch(ws[ch], from, now - replyLen - 0.2, n, false, rate)
+            Triple(ch, g, c) }
         replyFrom = now - replyLen - 0.2
-        val (best, bestCh) = hits.maxByOrNull { it.first.second } ?: return null
+        hits.forEach { replyNear = maxOf(replyNear, it.second.second, it.third.second) }
+        val (bestCh, g, c) = hits.filter { BrightDecoder.replyKind(it.second.second, it.third.second) != null }
+            .maxByOrNull { maxOf(it.second.second, it.third.second) } ?: return null
+        val ok = g.second >= c.second; val best = if (ok) g else c
         lastReplyFine = bestCh >= NCH
         expect = -1
-        replies.add(n to best.third)
-        return String.format(Locale.US, "# reply %s for nonce %d: match %.2f, %.1f s after ready%s\n",
-            if (best.third) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, best.first - readyAt, if (lastReplyFine) " (best on a fine square)" else "")
+        replies.add(n to ok)
+        return String.format(Locale.US, "# reply %s for nonce %d: match %.2f (other kind %.2f)%s, %.1f s after ready%s\n",
+            if (ok) "GOT IT" else "SAW BUT COULD NOT READ", n, best.second, if (ok) c.second else g.second,
+            if (best.second < BrightDecoder.REPLY_SURE) " WEAK, taken by the clear lead" else "", best.first - readyAt, if (lastReplyFine) " (best on a fine square)" else "")
     }
 
     /**
