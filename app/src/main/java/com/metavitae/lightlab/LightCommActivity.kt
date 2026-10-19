@@ -108,6 +108,7 @@ class LightCommActivity : Activity() {
     private fun startTalk(key: String) {
         if (talk != null && talkKey == key) return
         stopTalk()
+        BrightFormat.resetKnobs()   // the app always uses today's opening (the lab's test knobs live in the same process)
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) { push("problem", "text" to "Camera permission is needed to listen."); return }
         val cams = CamSession.backCameras(this)
         if (cams.isEmpty()) { push("problem", "text" to "No back camera."); return }

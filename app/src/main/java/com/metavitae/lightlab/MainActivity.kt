@@ -75,7 +75,9 @@ class MainActivity : Activity() {
             "aim-send" -> showAimSend(intent.getIntExtra("rate", 15), intent.getIntExtra("secs", 600))
             // adb: --es mode aim-recv [--ei rate 15]   (beeps louder/faster the better it sees the aiming pattern)
             "aim-recv" -> withCamera { showAimRecv(intent.getIntExtra("rate", 15)) }
+            // Oct 19 shorter-opening test (both phones the same): [--ei sync 15 (short opening pattern 15 steps, not 31)] [--ez barker false]
             "talk" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                BrightFormat.shortSync15 = intent.getIntExtra("sync", 31) == 15; BrightFormat.shortBarker = intent.getBooleanExtra("barker", true)
                 fun list(n: String) = intent.getStringExtra(n)?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
                 val opts = Talk.Opts(list("send"), intent.getIntExtra("speed", 5), intent.getBooleanExtra("auto", true), intent.getBooleanExtra("short", true),
                     intent.getIntExtra("after", 2000) / 1000.0, intent.getIntExtra("wait", 12).toDouble(), intent.getIntExtra("tries", 4),

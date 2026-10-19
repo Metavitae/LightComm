@@ -239,7 +239,8 @@ class Talk(
         rx.startLux()
         log(Results.header("Talking in turns") + "Passphrase rhythm: ${MessageFormat.beaconHz(pass)} /s (passphrase itself not saved)\n" +
             "To send: ${o.outbox.size} messages; start speed: ${BrightFormat.MODES[o.startMode].name}; auto-speed ${if (o.auto && li >= 0) "on" else "off"}; " +
-            "short openings ${if (o.short) "on" else "off"}; reply ${f1(o.replyAfter)} s after a message ends; wait for reply ${f1(o.waitReply)} s; up to ${o.tries} tries\n\n")
+            "short openings ${if (o.short) "on" else "off"}; reply ${f1(o.replyAfter)} s after a message ends; wait for reply ${f1(o.waitReply)} s; up to ${o.tries} tries\n" +
+            "Short opening: pattern ${BrightFormat.SHORT_SYNC.size} steps, Barker ${if (BrightFormat.shortBarker) "on" else "off"}\n\n")
         while (tv != null && !tv.isAvailable && alive) Thread.sleep(50)
         show("Starting camera...")
         openCam()

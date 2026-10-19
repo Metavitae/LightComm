@@ -30,7 +30,7 @@ object BrightFormat {
     const val SLOT = 1.0 / 30
     const val DARK = 15
     /** 31-step pattern (maximum-length sequence) from a 5-bit shift register with feedback from bits a and b. */
-    private fun mseq(a: Int, b: Int): IntArray { var reg = 0x1F; return IntArray(31) { val x = ((reg shr a) xor (reg shr b)) and 1; reg = ((reg shl 1) or x) and 0x1F; x } }
+    private fun mseq(a: Int, b: Int, width: Int = 5): IntArray { val m = (1 shl width) - 1; var reg = m; return IntArray(m) { val x = ((reg shr a) xor (reg shr b)) and 1; reg = ((reg shl 1) or x) and m; x } }
     /** Test pattern played twice: sharp to find in time. */
     val SYNC: IntArray = mseq(4, 2).let { it + it }
     val SYNC_SLOTS = DARK + SYNC.size
@@ -38,7 +38,17 @@ object BrightFormat {
      * Short opening, once two phones are linked: a different 31-step pattern, played once (about 1 s).
      * It matches the full sync at most 0.42 (the receiver needs 0.8), so the two are never confused.
      */
-    val SHORT_SYNC: IntArray = mseq(4, 1)
+    private val SHORT_SYNC_31: IntArray = mseq(4, 1)
+    /** 15-step pattern (4-bit register), about 0.5 s: only for the Oct 19 shorter-opening measurement. */
+    private val SHORT_SYNC_15: IntArray = mseq(3, 2, 4).let { it.copyOfRange(3, 15) + it.copyOfRange(0, 3) }   // starts lit, not with 3 more dark steps
+    /**
+     * Test knobs (Oct 19 measurement: how short can the short opening be?). Both phones must use the same.
+     * Defaults = today's format; the app itself never changes them (LightCommActivity puts them back).
+     */
+    @JvmField var shortSync15 = false
+    @JvmField var shortBarker = true
+    fun resetKnobs() { shortSync15 = false; shortBarker = true }
+    val SHORT_SYNC: IntArray get() = if (shortSync15) SHORT_SYNC_15 else SHORT_SYNC_31
     /**
      * Short header: mode 4 | length 8 | check 12 (keyed with the passphrase and the link).
      * 12 bits, not 8 (Oct 14): with 8 a garbled header passed by chance about 1 time in 28.
@@ -48,7 +58,9 @@ object BrightFormat {
     val BARKER = intArrayOf(1, 1, 1, 0, 0, 1, 0)
     const val HDR_BITS = 60
     val HDR_SYMS = BARKER.size + HDR_BITS / 4 * 7
-    val SHORT_HDR_SYMS = BARKER.size + SHORT_HDR_BITS / 4 * 7
+    /** Barker before the short header (off = the Oct 19 test knob). */
+    val SHORT_BARKER: IntArray get() = if (shortBarker) BARKER else IntArray(0)
+    val SHORT_HDR_SYMS get() = SHORT_BARKER.size + SHORT_HDR_BITS / 4 * 7
     const val TRAIN_REPEAT = 3
     const val PILOT_EVERY = 32
     const val MAX_BYTES = 80
@@ -407,7 +419,7 @@ object BrightFormat {
         val ts = mode.symSec
         val pmin = pminMs / 1000.0
         val hdr = if (short) shortHeaderBits(pass, n, mode, data.size, packed != null) else headerBits(pass, n, mode, tag, pminMs, data.size, packed != null)
-        for (b in BARKER + hdr) w.add(ts, if (b == 1) ts else 0.0)
+        for (b in (if (short) SHORT_BARKER else BARKER) + hdr) w.add(ts, if (b == 1) ts else 0.0)
         for (l in trainSymbols(mode)) w.add(ts, mode.onSec(l, pmin))
         val coded = bodyBits(data, pass, n)
         val (body, _) = withPilots(bitsToSymbols(coded, mode), mode)
@@ -484,13 +496,13 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             }
             i++
         }
-        if (n < 40) return 0.0
+        if (n < (if (w.end < 1.4) 25 else 40)) return 0.0   // 25: the 1 s test opening (Oct 19) gives only about 30 pictures
         val cov = sxy - sx * sy / n; val vx = sxx - sx * sx / n; val vy = syy - sy * sy / n
         return if (vx <= 0 || vy <= 0) 0.0 else cov / sqrt(vx * vy)
     }
 
     private val sync = BrightFormat.syncWave()
-    private val shortSync = BrightFormat.syncWave(short = true)
+    private val shortSync get() = BrightFormat.syncWave(short = true)
 
     /** Find sends (their sync pattern; short = the short opening's) in a channel between times from..to. Returns (t0, correlation), best first. */
     fun findStarts(s: Series, from: Double, to: Double, minCorr: Double = 0.8, short: Boolean = false): List<Pair<Double, Double>> {
@@ -752,14 +764,15 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val ts = 1.0 / tryRate
             val trial = BrightFormat.syncWave(short)
             repeat(hs) { trial.add(ts, Double.NaN) }
-            val forced = IntArray(hs) { if (it < BrightFormat.BARKER.size) BrightFormat.BARKER[it] else -1 }
+            val barker = if (short) BrightFormat.SHORT_BARKER else BrightFormat.BARKER
+            val forced = IntArray(hs) { if (it < barker.size) barker[it] else -1 }
             chans.forEach { fit(it, w, w.end) }
             var drift: Array<Drift>? = null
             for (attempt in 0..2) {
                 val syms = viterbi(chans, trial, syncSlots, hs, doubleArrayOf(0.0, ts), forced, drift, tailKnown = false)
                 debugHdr?.let { e -> if (e.size == hs && tryRate == debugRate) println("    header rate $tryRate attempt $attempt: wrong symbols ${e.indices.count { e[it] != syms[it] }} of $hs; wrong at " +
                     e.indices.filter { e[it] != syms[it] }.joinToString(",")) }
-                val bits = BrightFormat.unhamming(BrightFormat.deinterleave(syms.copyOfRange(BrightFormat.BARKER.size, hs)))
+                val bits = BrightFormat.unhamming(BrightFormat.deinterleave(syms.copyOfRange(barker.size, hs)))
                 if (headerOk(bits, tryRate)) {
                     hdr = bits; rate = tryRate; headerNote = if (attempt == 0) "" else "header on pass ${attempt + 1}; "
                     for (k in 0 until hs) w.add(ts, if (syms[k] == 1) ts else 0.0)
@@ -807,6 +820,9 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         for (j in 0 until nBody) w.add(mode.symSec, if (forced[j] >= 0) levelOn[forced[j]] else Double.NaN)
         repeat(BrightFormat.TAIL) { w.add(BrightFormat.SLOT, 0.0) }
 
+        // Shadow check (Oct 19 measurement, nothing changes on the wire): the first text a shorter check
+        // (the top 8 or 12 bits of today's 16) would have let through. Differs from the real result = a wrong text it would have shown.
+        val shadow = arrayOfNulls<String>(2); val shadowBits = intArrayOf(8, 12)
         fun read(body: IntArray): Pair<IntArray, String?> {
             val data = body.filterIndexed { j, _ -> !isPilot[j] }.toIntArray()
             val nb = BrightFormat.codedBodyBitCount(len)
@@ -819,6 +835,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                                  BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
                 val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
                 val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
+                for (k in 0..1) if (shadow[k] == null && crc shr (16 - shadowBits[k]) == BrightFormat.crc16(bytes) shr (16 - shadowBits[k]))
+                    (if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8))?.let { shadow[k] = it }
                 if (crc == BrightFormat.crc16(bytes)) {
                     val t = if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8)
                     if (t != null) return coded to t
@@ -840,6 +858,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val r = read(body); coded = r.first; text = r.second
             note = headerNote + if (pass == 2) "pass 2 (brightness followed, guess-free)" else "pass 3 (brightness followed from guesses)"
         }
+        for (k in 0..1) if (shadow[k] != null && shadow[k] != text) note += "; SHADOW ${shadowBits[k]}-bit check: WRONG TEXT"
         // How many of the mode's levels stand clearly apart on the best channel (gap > 3 x noise).
         val lv = levelOn.map { best.F(it / mode.symSec) }
         var apart = 1; var last = lv[0]
