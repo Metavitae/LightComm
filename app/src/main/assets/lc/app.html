@@ -143,9 +143,9 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <button class="pill" onclick="send('OK')">OK</button>
     <button class="pill" onclick="send('Need help')" style="border-color:var(--ink)">Need help</button>
     <button class="pill" onclick="send('Wait')">Wait</button>
-    <button class="pill mono" id="testBtn" onclick="testTap()">TEST</button>
     <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
   </div>
+  <div style="padding:8px 16px 0"><button class="pill mono" id="testBtn" style="width:100%;font-weight:800" onclick="testTap()">TEST</button></div>
   <div id="inputRow">
     <input id="box" placeholder="Write to the circle" maxlength="400" enterkeyhint="send" onkeydown="if(event.key==='Enter'){sendBox()}">
     <button id="sendBtn" onclick="sendBox()" aria-label="Send as light"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="13" cy="13" r="4.5" fill="currentColor"/><path d="M13 2v3.5M13 20.5V24M2 13h3.5M20.5 13H24M5.2 5.2l2.5 2.5M18.3 18.3l2.5 2.5M5.2 20.8l2.5-2.5M18.3 7.7l2.5-2.5"/></svg></button>
