@@ -272,10 +272,29 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     val replies = java.util.concurrent.LinkedBlockingQueue<Pair<Int, Boolean>>()
     /** A send has started and is still coming (don't start sending over it). */
     @Volatile var hearing = false
-    /** Send whose header was read but whose end is still coming: (start, end); skip re-reading it until then. */
-    @Volatile private var pending: Pair<Double, Double>? = null
+    /** Send whose header was read but whose end is still coming; skip re-reading it until then. Also where it blinks
+     *  (blocks, fine squares) and how strongly, to notice when the sender stops in the middle (Oct 18). */
+    private class Pend(val start: Double, val end: Double, val blocks: List<Int>, val zones: List<Int>, val swings: List<Double>, val quietSec: Double)
+    @Volatile private var pending: Pend? = null
     /** How far the send being heard has come, 0..1 (-1 = none, or its header not read yet). */
-    fun progress(): Double { val p = pending ?: return -1.0; val now = newest(); return ((now - p.first) / (p.second - p.first)).coerceIn(0.0, 1.0) }
+    fun progress(): Double { val p = pending ?: return -1.0; val now = newest(); return ((now - p.start) / (p.end - p.start)).coerceIn(0.0, 1.0) }
+
+    /** Spread of a channel's brightness (10th to 90th percentile), robust to a stray picture. */
+    private fun spread(y: DoubleArray): Double { if (y.size < 3) return 0.0; val v = y.sorted(); return v[(v.size * 9) / 10] - v[v.size / 10] }
+
+    /** The send's own channels from a to b: its blocks, then its fine squares. */
+    private fun pendSeries(p: Pend, a: Double, b: Double): List<BrightDecoder.Series> {
+        val w = window(a, b); val f = fineWindow(a, b, p.zones)
+        return p.blocks.map { w[it] } + f
+    }
+
+    /** True if the send stopped blinking: every one of its channels steady for quietSec (a stopped sender). */
+    private fun wentSteady(p: Pend, now: Double): Boolean {
+        val ser = pendSeries(p, now - p.quietSec, now)
+        if (ser.isEmpty() || ser[0].t.size < p.quietSec * 20) return false     // too few pictures to tell
+        val strong = ser.indices.filter { p.swings[it] > 0 }.sortedByDescending { p.swings[it] }.take(2)   // the clearest of its spots
+        return strong.isNotEmpty() && strong.all { spread(ser[it].y) < 0.3 * p.swings[it] }
+    }
     val tally = LinkedHashMap<String, IntArray>()   // "mode|from" -> (right, sent)
     var lastLine = ""
 
@@ -417,7 +436,15 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         val link = inLink
         val from = maxOf(scanFrom, now - 140)
         if (now - from < (if (link != null) shortLen else syncLen) + 1) return emptyList()
-        pending?.let { (pt, pe) -> if (pt >= from - 0.1 && now < pe) return emptyList() }
+        pending?.let { p -> if (p.start >= from - 0.1 && now < p.end) {
+            // Oct 18: a send stopped by the person ended early, yet we waited for its planned end, replied "could not read"
+            // and missed the next message that came meanwhile. Steady light for quietSec in the middle = stopped: drop it.
+            if (now - p.start > p.quietSec + 1 && wentSteady(p, now)) {
+                pending = null; hearing = false; scanFrom = now - 0.5
+                return listOf(String.format(Locale.US, "# send went steady for %.1f s at %.0f%% of it: stopped by the sender, dropped (no reply)\n",
+                    p.quietSec, 100 * (now - p.start) / (p.end - p.start)))
+            }
+            return emptyList() } }
         scanReply(syncLen)?.let { return listOf(it) }
         val fz = flickery(from, now)
         val ws = window(from - 0.1, now) + fineWindow(from - 0.1, now, fz)
@@ -446,7 +473,13 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         val headerDone = t0.first + (if (short) shortLen + BrightFormat.SHORT_HDR_SYMS.toDouble() / BrightFormat.RATES.last()
                                      else syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last()) + 1.0
         hearing = true
-        if (r.mode != null && r.endT > now) { pending = t0.first to r.endT; return emptyList() }   // header read, rest still coming
+        if (r.mode != null && r.endT > now) {   // header read, rest still coming
+            val blocks = r.blocks.filter { it < NCH }; val zones = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }
+            val p0 = Pend(t0.first, r.endT, blocks, zones, emptyList(), max(1.5, 24 * r.mode.symSec))
+            val sw = pendSeries(p0, t0.first, now).map { spread(it.y) }
+            pending = Pend(t0.first, r.endT, blocks, zones, sw, p0.quietSec)
+            return emptyList()
+        }
         if (r.mode == null && now < headerDone) return emptyList()       // wait for the header at the slow speed
         hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0

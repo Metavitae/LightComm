@@ -105,6 +105,12 @@ class Talk(
     private fun now() = SystemClock.elapsedRealtimeNanos() / 1e9
     /** Seconds the other side gets to answer first after our message got through. */
     private val REPLY_PRIORITY = 6.0
+    /** Oct 18: both phones started sending at the same moment and kept retrying in step. A random extra wait before
+     *  each send (0-1.5 s, new every time), and giving way when the other phone is heard (at most 3 times a message). */
+    private var jitter = Math.random() * 1.5
+    private var giveWays = 0
+    /** deliver() result "round" when it gave way to the other phone (-1 = stopped by the person). */
+    private val GAVE_WAY = -2.0
     private fun log(s: String) = file.append(s)
     private fun f1(x: Double) = String.format(Locale.US, "%.1f", x)
 
@@ -279,10 +285,13 @@ class Talk(
                 log("# message ${next + 1} stopped by the person before it was sent\n")
                 events?.stopped(next + 1); next++; continue
             }
-            if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap))) {
+            if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap + jitter))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val text = box[next]
                 val (ok, n, round) = deliver(text, next + 1)
+                jitter = Math.random() * 1.5
+                if (!ok && round == GAVE_WAY) { giveWays++; quietSince = now(); continue }   // answer the other phone first, then this one again
+                giveWays = 0
                 if (!ok && round < 0) {
                     log("# message ${next + 1} stopped by the person after $n tries\n")
                     events?.stopped(next + 1); next++; quietSince = now(); continue
@@ -387,6 +396,14 @@ class Talk(
             }
             // Oct 16 (05:04): the POCO missed 3 got-its in a row, yet the black check found nothing. Write down what it saw.
             if (s.failure == null && got != true) log(w.line())
+            // No got-it, and the other phone was blinking meanwhile: it's talking too. Let the main loop read and answer it, then resend.
+            if (got == null && !(k in stoppedK) && giveWays < 3 && (w.heard || rx.hearing || rx.heard.isNotEmpty())) {
+                rx.expect = -1
+                log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,NO REPLY - OTHER PHONE TALKING: GIVING WAY,0.0,0.0,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
+                    mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, text.replace("\"", "'")))
+                usedUp(useShort, seq, true)
+                return Triple(false, attempt, GAVE_WAY)
+            }
             rx.expect = -1
             // Stopped by the person: a got-it that still came means it was delivered; otherwise stop here.
             if (k in stoppedK && got != true) {
