@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App icon AD1 (founder, Oct 14): Chat's Android layers from Art/Source/LightComm_icon_AD1_final.zip.
+     No monochrome layer: its thicker line is not agreed. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_fg" />
+</adaptive-icon>
