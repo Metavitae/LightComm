@@ -32,6 +32,16 @@ class LightCommWidget : AppWidgetProvider() {
         }
     }
 
+    // The 8T's launcher lost the tap action again by Oct 23 (widget opened Light Lab). Redraw whenever the
+    // launcher resizes or restores the widget too.
+    override fun onAppWidgetOptionsChanged(ctx: Context, mgr: AppWidgetManager, id: Int, opts: android.os.Bundle) {
+        onUpdate(ctx, mgr, intArrayOf(id))
+    }
+
+    override fun onRestored(ctx: Context, oldIds: IntArray, newIds: IntArray) {
+        onUpdate(ctx, AppWidgetManager.getInstance(ctx), newIds)
+    }
+
     companion object {
         fun show(ctx: Context, title: String, caption: String) {
             ctx.getSharedPreferences("lc_widget", Context.MODE_PRIVATE).edit().putString("title", title).putString("caption", caption).apply()

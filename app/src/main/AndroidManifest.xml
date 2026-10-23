@@ -14,9 +14,10 @@
             android:exported="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">
+            <!-- No launcher icon (founder, Oct 23): the founder only uses LightComm; CC opens Light Lab over adb
+                 with am start -n. Being the only launcher screen also makes LightComm what a bare widget tap opens. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
         <!-- LightComm: first approximation of the real app (Night Watch screens), its own launcher icon. -->
