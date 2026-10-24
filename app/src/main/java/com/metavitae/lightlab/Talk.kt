@@ -64,6 +64,9 @@ class Talk(
     @Volatile var watchFind = false
     /** Blink the Find pattern for this many seconds as soon as possible (0 = no). */
     @Volatile var findSec = 0
+    /** LightComm is on the screen (set by the app). Oct 24: off the screen, Android refuses the camera ("CAMERA_DISABLED ... from background"),
+     *  and the reopen kept trying every 5 s for 25 min. Now it waits until the app is back on the screen. */
+    @Volatile var onScreen = true
 
     /** Messages to send: the start list, plus any added later (Field screen). */
     private val box: MutableList<String> = java.util.Collections.synchronizedList(ArrayList(o.outbox))
@@ -173,12 +176,21 @@ class Talk(
     private var lostTries = 0
     private var lastReopen = 0.0
     private fun watch(c: CamSession) {
-        c.onError = { e -> log("# camera problem: $e\n"); if (cam === c) camLost = e }
+        c.onError = { e -> log("# camera problem: $e\n"); if (cam === c) camLost = e; if ("CAMERA_DISABLED" in e) blockedOffScreen = true }
     }
+    @Volatile private var blockedOffScreen = false
+    private var toldOffScreen = false
 
     /** The camera in use stopped: open it again (every 5 s at most; the person is told after 3 tries). True = tried. */
     private fun reopenIfLost(): Boolean {
-        if (camLost.isEmpty() || now() - lastReopen < 5) return false
+        if (camLost.isEmpty()) return false
+        if (blockedOffScreen && !onScreen) {
+            if (!toldOffScreen) { log("# camera refused while LightComm is off the screen: waiting until it is back\n"); toldOffScreen = true }
+            Thread.sleep(300); return true
+        }
+        if (toldOffScreen) { log("# LightComm back on the screen: opening the camera again\n"); toldOffScreen = false; lastReopen = 0.0 }
+        blockedOffScreen = false
+        if (now() - lastReopen < 5) return false
         lostTries++
         log("# camera lost ($camLost): opening it again, try $lostTries\n")
         camLost = ""; lastReopen = now()
@@ -211,6 +223,24 @@ class Talk(
     /** When the black-camera fix last ran (it may run again while listening, at most once a minute). */
     private var lastBlackFix = 0.0
     private var blackSince = 0.0
+
+    /** Oct 24 (01:42): with the battery low, the POCO's picture got dim but not pure black (brightest spots ~1, were 9-56):
+     *  it missed every got-it until the black fix happened to run. The brightest spots while waiting at the last got-it are
+     *  remembered; under a quarter of that (and under 3) for 3 s = start the camera again (at most once a minute). */
+    private var goodTop = 0.0
+    private var fadedSince = 0.0
+    private fun checkFaded(): Boolean {
+        val top = rx.brightTop()
+        if (cam == null || rx.readyAt <= 0 || rx.hearing || goodTop < 5 || top >= 3 || top >= goodTop * 0.25) { fadedSince = 0.0; return false }
+        if (fadedSince == 0.0) fadedSince = now()
+        if (now() - fadedSince < 3 || now() - lastBlackFix < 60) return false
+        log(String.format(Locale.US, "# camera picture faded: brightest spots %.1f (were %.1f at the last got-it), background %.1f: starting it again\n", top, goodTop, rx.background()))
+        val ok = restartAuto()
+        rx.readyAt = rx.newest()
+        log(String.format(Locale.US, "# after the restart: brightest spots %.1f, background %.1f%s\n", rx.brightTop(), rx.background(), if (ok) "" else " (pure black)"))
+        lastBlackFix = now(); fadedSince = 0.0
+        return true
+    }
 
     /** Pure black: not even picture noise (a dark room still gives some). */
     private fun blackCamera() = rx.newest() > 0 && rx.background() < 0.05 && rx.brightTop() < 0.5
@@ -282,6 +312,7 @@ class Talk(
                     closeCam(); openCam(); quietSince = now(); continue
                 }
             } else blackSince = 0.0
+            if (checkFaded()) { quietSince = now(); continue }
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
             if (next < box.size && (next + 1) in stoppedK) {
@@ -409,6 +440,7 @@ class Talk(
                 while (alive && now() < until) {
                     w.look()
                     if (reopenIfLost()) continue
+                    if (checkFaded()) continue
                     val rep = rx.replies.poll(200, TimeUnit.MILLISECONDS) ?: continue
                     if (rep.first == s.nonce) { got = rep.second; seenAfter = now() - sendEnd; break }
                 }
@@ -436,6 +468,7 @@ class Talk(
             log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,%s,%.1f,%.1f,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
                 mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, outcome, seenAfter, if (got == true) now() - t0 else 0.0, text.replace("\"", "'")))
             if (got == true) {
+                if (w.n > 0) goodTop = w.topMin
                 outLink = if (useShort) outLink!!.copy(lastSeq = seq) else BrightFormat.Link(s.nonce, BrightFormat.phoneTag(android.os.Build.MODEL), s.pminMs, 0)
                 if (attempt == 1) streak++ else streak = 0
                 if (o.auto && li > 0 && streak >= 2) { li--; streak = 0; log("# auto-speed: up to ${BrightFormat.MODES[ladder[li]].name}\n") }

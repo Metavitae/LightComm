@@ -335,9 +335,9 @@ const TESTS = {
     ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E2','plain','E2' + LONG],
     // Oct 19 handheld (Sol's question: does a held phone fail from moving, or from weak light?). This phone stays on its stand;
     // the person holds the 8T 1-2 m away (it sees this phone's light strongly, so a failure there is the hand).
-    ['H1','hand','H1 HELD STEADY', 'H: tap TEST, then pick up the 8T and stand 1-2 m (3-6 ft) from this phone, 8T camera pointed at it. Sending starts 15 s after the tap.'],
+    ['H1','hand','H1 HELD STEADY', 'H1-H3: leave THIS phone (POCO) on its stand. 1) Tap TEST. 2) Pick up the OTHER phone (8T), stand 1-2 m (3-6 ft) away and point its back camera at this phone. Keep holding it through H3. Sending starts 15 s after the tap.'],
     ['H2','plain','H2 HELD STEADY'], ['H3','plain','H3 HELD STEADY'],
-    ['H4','hand','H4 HELD NATURALLY', 'H: tap TEST, then hold the 8T naturally, like reading a message, not aiming, 1-2 m from this phone. Sending starts 15 s after the tap.'],
+    ['H4','hand','H4 HELD NATURALLY', 'H4-H6: leave THIS phone (POCO) on its stand. 1) Tap TEST. 2) Hold the OTHER phone (8T) 1-2 m away the way you read a message, no aiming. Keep holding it through H6. Sending starts 15 s after the tap.'],
     ['H5','plain','H5 HELD NATURALLY'], ['H6','plain','H6 HELD NATURALLY'],
     ['D1','cam','D1 CAMERA CAME BACK']],
   '8T': [['A4','plain','A4 HELLO FROM THE 8T'], ['A5','plain','A5 HELLO FROM THE 8T'], ['A6','plain','A6 HELLO FROM THE 8T'],
@@ -425,7 +425,10 @@ function tick(){
         line(m.whole ? 'Message from ' + e.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + e.from + '. The rest is coming.', 5000);
         if (m.whole && auto && !COPY.test(m.text)) send('(COPY) ' + m.text) }
       else if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · ' + sig }); drawMsgs();
-        line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
+        const hm = /^H([1-6]) HELD/.exec(e.text);   // Oct 24: the handheld steps were shown only on the POCO; the phone in the hand says it too
+        if (hm) line(+hm[1] < 3 ? 'Handheld test: you hold THIS phone. Keep its back camera pointed at the other phone until H3.' : +hm[1] === 3 ? 'H3 done. You can put this phone down until the next step.'
+          : +hm[1] < 6 ? 'Handheld test: you hold THIS phone the way you read a message, no aiming, until H6.' : 'H6 done. Put this phone back where it was.', 30000);
+        else line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
         if (auto && !COPY.test(e.text)) send('(COPY) ' + e.text) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)

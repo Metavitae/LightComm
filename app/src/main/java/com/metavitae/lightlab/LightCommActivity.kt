@@ -102,8 +102,8 @@ class LightCommActivity : Activity() {
     private var unseen = 0
     @Volatile private var visible = false
     private fun widget(title: String, caption: String) = try { LightCommWidget.show(this, title, caption) } catch (_: Exception) {}
-    override fun onResume() { super.onResume(); visible = true; unseen = 0; if (talk != null) widget("Listening", chatName) }
-    override fun onPause() { visible = false; super.onPause() }
+    override fun onResume() { super.onResume(); visible = true; talk?.onScreen = true; unseen = 0; if (talk != null) widget("Listening", chatName) }
+    override fun onPause() { visible = false; talk?.onScreen = false; super.onPause() }
 
     private fun startTalk(key: String) {
         if (talk != null && talkKey == key) return
@@ -143,6 +143,7 @@ class LightCommActivity : Activity() {
                 }
             }
         }
+        t.onScreen = visible
         talk = t; talkKey = key; phase = "starting"
         t.start()
     }
