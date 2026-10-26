@@ -732,7 +732,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
 
     /**
      * Try to read one send whose sync starts near t0 (receiver clock).
-     * link != null: a short opening from that link (follow-up numbers lastSeq .. lastSeq + 2 are tried).
+     * link != null: a short opening from that link (follow-up numbers lastSeq .. lastSeq + 5 are tried).
      */
     fun decode(series: List<Series>, t0: Double, syncCorr: Double, link: BrightFormat.Link? = null): Result {
         val short = link != null
@@ -760,8 +760,9 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                 val m = bitsInt(bits, 0, 4); val l = bitsInt(bits, 4, 8); val chk = bitsInt(bits, 12, 12)
                 if (!sane(m and 7, l, tryRate)) return false
                 // The sender only moves on after our "got it", so its number is our last one (a resend) or the next;
-                // +2 is slack. Every extra number tried is one more chance for a garbled header to pass by luck.
-                for (k in max(1, link.lastSeq)..link.lastSeq + 2)
+                // +5 is slack (Oct 26: was +2; give-ways and stops used numbers up and ran past it). Every extra number
+                // tried is one more chance for a garbled header to pass by luck: about 1 in 700 now, was 1 in 1,400.
+                for (k in max(1, link.lastSeq)..link.lastSeq + 5)
                     if (chk == BrightFormat.shortCheck(pass, BrightFormat.seqNonce(pass, link.id, k), m, l)) { seq = k; return true }
                 return false
             }

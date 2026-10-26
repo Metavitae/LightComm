@@ -312,7 +312,8 @@ class Talk(
                     closeCam(); openCam(); quietSince = now(); continue
                 }
             } else blackSince = 0.0
-            if (checkFaded()) { quietSince = now(); continue }
+            // Oct 26: no faded check here. Idle, the light around can simply go off (8T 05:00: background 47 -> 1.4 when the
+            // room went dark) and it restarted the camera for nothing. The real fade (Oct 24) showed as missed got-its: checked while waiting.
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
             val turnOk = !o.turns || myTurn
             if (next < box.size && (next + 1) in stoppedK) {
@@ -380,10 +381,14 @@ class Talk(
     }
 
     /** Oct 16 (04:51): a stopped message's short-opening number went to the next message, same nonce. If the other
-     *  phone had read the stopped one, it would take the next as a repeat. The receiver tries lastSeq .. +2, so skipping one is fine. */
+     *  phone had read the stopped one, it would take the next as a repeat. The receiver tries lastSeq .. +5, so skipping one is fine. */
     private fun usedUp(useShort: Boolean, seq: Int, blinked: Boolean) {
         if (useShort && blinked && outLink != null) outLink = outLink!!.copy(lastSeq = seq)
     }
+    /** Oct 26: giving way keeps the number (the next try resends the same short opening: read = "got it" again as seen before,
+     *  not read = read now). Burning one per give-way ran 3+ ahead of the receiver, which then couldn't read any (6 of 10 misses). */
+    private var gaveWaySeq = -1
+    private fun blinkedBefore(useShort: Boolean, seq: Int, attempt: Int) = attempt > 1 || (useShort && seq == gaveWaySeq)
 
     /** What the camera showed while waiting for a reply, looked at about 5 times a second. */
     private inner class WaitLook {
@@ -411,11 +416,11 @@ class Talk(
         var shortMisses = 0
         for (attempt in 1..o.tries) {
             if (!alive) break
-            if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); return Triple(false, attempt - 1, -1.0) }
+            if (k in stoppedK) { usedUp(useShort, seq, blinkedBefore(useShort, seq, attempt)); return Triple(false, attempt - 1, -1.0) }
             // Oct 19: listen before a resend too. The other phone blinking now = it's talking: read and answer it first.
             if (attempt > 1 && giveWays < 3 && rx.busy()) {
                 log("# other phone blinking before try $attempt: giving way\n")
-                usedUp(useShort, seq, true)
+                if (useShort) gaveWaySeq = seq
                 return Triple(false, attempt - 1, GAVE_WAY)
             }
             val mode = BrightFormat.MODES[if (o.auto && li >= 0) ladder[li] else o.startMode]
@@ -423,7 +428,7 @@ class Talk(
             events?.sending(k, text, attempt, mode, useShort)
             closeCam()
             rx.replies.clear(); rx.replyNear = 0.0
-            if (k in stoppedK) { usedUp(useShort, seq, attempt > 1); openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
+            if (k in stoppedK) { usedUp(useShort, seq, blinkedBefore(useShort, seq, attempt)); openCam(); return Triple(false, attempt - 1, -1.0) }   // stopped while the camera closed
             sendingK = k
             // Also asked before every switch: a stop that lands before the sender starts is never overwritten.
             val s = sender.send(text, mode, pass, 0.0, if (useShort) outLink else null, seq, if (useShort) -1 else fullNonce, { k in stoppedK }) { }
@@ -453,7 +458,7 @@ class Talk(
                 rx.expect = -1
                 log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,NO REPLY - OTHER PHONE TALKING: GIVING WAY,0.0,0.0,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
                     mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, text.replace("\"", "'")))
-                usedUp(useShort, seq, true)
+                if (useShort) gaveWaySeq = seq
                 return Triple(false, attempt, GAVE_WAY)
             }
             rx.expect = -1
