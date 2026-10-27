@@ -13,6 +13,7 @@ import android.widget.RemoteViews
  * the app pushes a new title and caption only when something happens (listening, sending, a new message,
  * stopped). No timed refresh, no new permission, never wakes the camera. Tap opens LightComm.
  * No news (just opened, listening, not listening): our banner fills the widget (founder, Oct 14).
+ * Routine news fades back to the banner after 10 minutes; opening the app clears all news (Oct 27).
  * News (sending, delivered, not delivered, new messages): the status shows instead.
  * Not yet: Search countdown, Resting, Antenna (those features don't exist yet).
  */
@@ -26,7 +27,11 @@ class LightCommWidget : AppWidgetProvider() {
         super.onReceive(ctx, intent)
         // A new build was installed: the launcher fell back to the plain layout without the tap action
         // (tapping then opened Light Lab, Oct 14). Draw it again so a tap opens LightComm.
-        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+        // Oct 27: the app isn't running after an install, so routine news goes too; news that needs the person stays.
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED || intent.action == FADE) {
+            val p = ctx.getSharedPreferences("lc_widget", Context.MODE_PRIVATE)
+            if (p.getString("title", "") in ROUTINE && (intent.action != FADE || System.currentTimeMillis() - p.getLong("at", 0) >= FADE_MS - 5_000))
+                p.edit().putString("title", "LightComm").putString("caption", "Tap to open").apply()
             val mgr = AppWidgetManager.getInstance(ctx)
             onUpdate(ctx, mgr, mgr.getAppWidgetIds(ComponentName(ctx, LightCommWidget::class.java)))
         }
@@ -43,8 +48,22 @@ class LightCommWidget : AppWidgetProvider() {
     }
 
     companion object {
+        /** How long news stays (founder Oct 27, option 3): routine news ("Sending", "Delivered") goes back to the banner after
+         *  10 minutes; news that needs the person ("Not delivered", new messages) stays until the app is opened. */
+        private val ROUTINE = setOf("Sending as light", "Delivered")
+        private const val FADE_MS = 10 * 60_000L
+        private const val FADE = "com.metavitae.lightlab.WIDGET_FADE"
+
         fun show(ctx: Context, title: String, caption: String) {
-            ctx.getSharedPreferences("lc_widget", Context.MODE_PRIVATE).edit().putString("title", title).putString("caption", caption).apply()
+            ctx.getSharedPreferences("lc_widget", Context.MODE_PRIVATE).edit().putString("title", title).putString("caption", caption)
+                .putLong("at", System.currentTimeMillis()).apply()
+            // An inexact alarm: no permission needed, may come a little late, never wakes the camera.
+            if (title in ROUTINE) try {
+                val fade = PendingIntent.getBroadcast(ctx, 1, Intent(ctx, LightCommWidget::class.java).setAction(FADE),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                ctx.getSystemService(android.app.AlarmManager::class.java)
+                    .set(android.app.AlarmManager.RTC, System.currentTimeMillis() + FADE_MS, fade)
+            } catch (_: Exception) {}
             val mgr = AppWidgetManager.getInstance(ctx)
             val ids = mgr.getAppWidgetIds(ComponentName(ctx, LightCommWidget::class.java))
             if (ids.isNotEmpty()) draw(ctx, mgr, ids, title, caption)
