@@ -242,6 +242,30 @@ class Talk(
         return true
     }
 
+    /** Oct 27 (founder): the camera was set once at the start and never again. Oct 26 night: room lights at 04:05-05:20, then
+     *  daylight from 05:40 (8T background 10 -> 155), and at 06:10 signal 2-6 lost most got-its. Now, while idle, the setting
+     *  follows the room: when the one it would choose now is under half or over double the one in use for 3 s, it is applied
+     *  (at most every 10 s; never while hearing, while the other phone blinks, or while waiting for a reply). */
+    private var driftSince = 0.0
+    private var lastAdjust = 0.0
+    private fun followRoom() {
+        val c = cam
+        if (c == null || rx.readyAt <= 0 || rx.hearing || rx.busy() || rx.newest() - rx.readyAt < 2) { driftSince = 0.0; return }
+        val bg = rx.background(); val top = rx.brightTop()
+        val (i2, e2) = BrightListener.settle(bg, top, iso, exp)
+        val ratio = i2 * e2 / (iso * exp)
+        if (ratio in 0.5..2.0) { driftSince = 0.0; return }
+        if (driftSince == 0.0) driftSince = now()
+        if (now() - driftSince < 3 || now() - lastAdjust < 10) return
+        log(String.format(Locale.US, "# room light changed: background %.1f, brightest spots %.0f at ISO %d, %.1f ms -> ISO %d, %.1f ms\n", bg, top, iso, exp * 1000, i2, e2 * 1000))
+        iso = i2; exp = e2; c.iso = iso; c.expNs = (exp * 1e9).toLong(); rx.expSec = exp; rx.iso = iso; c.apply()
+        rx.settingChanged(ratio)
+        goodTop = 0.0                 // the faded check compares with the next got-it, seen at the new setting
+        Thread.sleep(500)
+        rx.readyAt = rx.newest()      // pictures from before the change aren't read together with the ones after
+        lastAdjust = now(); driftSince = 0.0
+    }
+
     /** Pure black: not even picture noise (a dark room still gives some). */
     private fun blackCamera() = rx.newest() > 0 && rx.background() < 0.05 && rx.brightTop() < 0.5
 
@@ -312,6 +336,7 @@ class Talk(
                     closeCam(); openCam(); quietSince = now(); continue
                 }
             } else blackSince = 0.0
+            followRoom()
             // Oct 26: no faded check here. Idle, the light around can simply go off (8T 05:00: background 47 -> 1.4 when the
             // room went dark) and it restarted the camera for nothing. The real fade (Oct 24) showed as missed got-its: checked while waiting.
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
@@ -441,7 +466,8 @@ class Talk(
             var got: Boolean? = null; var seenAfter = 0.0
             val w = WaitLook()
             if (s.failure == null) {
-                val until = sendEnd + o.waitReply
+                // Oct 27: the got-it is longer now (6.3 s at 15 per second): wait at least for it to end, plus 5 s.
+                val until = sendEnd + max(o.waitReply, o.replyAfter + BrightFormat.replyWave(pass, s.nonce, true, mode.perSec).end + 5.0)
                 while (alive && now() < until) {
                     w.look()
                     if (reopenIfLost()) continue

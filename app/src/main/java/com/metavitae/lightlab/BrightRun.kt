@@ -307,6 +307,9 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         return blocks.any { spread(w[it].y) > 0.4 * sw.getValue(it) } || zones.indices.any { spread(f[it].y) > 0.4 * sw.getValue(NCH + zones[it]) }
     }
 
+    /** Talk changed the camera setting (sensitivity x picture time, times `ratio`, Oct 27): the other phone's swing changes with it. */
+    fun settingChanged(ratio: Double) { knownSwing = knownSwing.mapValues { it.value * ratio } }
+
     /** True if the send stopped blinking: every one of its channels steady for quietSec (a stopped sender). */
     private fun wentSteady(p: Pend, now: Double): Boolean {
         val ser = pendSeries(p, now - p.quietSec, now)

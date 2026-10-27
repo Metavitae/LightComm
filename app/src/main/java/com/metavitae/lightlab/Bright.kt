@@ -359,7 +359,14 @@ object BrightFormat {
      * replying phone, half the 30 per second replies were missed while its 10 per second messages were read).
      * At 15 and 10 per second the pattern is 31 slots (2.1 s / 3.1 s).
      */
-    fun replySlots(perSec: Int) = if (perSec >= 30) REPLY_SLOTS else 31
+    /**
+     * Oct 27 (founder: sturdier got-its, longer and stronger than the message): 63 slots at every speed, one speed
+     * slower than the message (30 -> 15, 15 and 10 -> 10 per second), so about 3 pictures per slot and twice as many
+     * slots to match: 6.3 s at the usual 15 per second (was 2.1 s). Oct 26, 06:10: at signal 2-6 most got-its were lost.
+     * Both phones must have this build (a reply's speed and length are part of what the other phone looks for).
+     */
+    fun replySlots(perSec: Int) = REPLY_SLOTS
+    fun replyRate(perSec: Int) = if (perSec >= 30) 15 else 10
     fun replyPattern(pass: String, nonce: Int, ok: Boolean, perSec: Int = 30): IntArray {
         val n = replySlots(perSec)
         var fallback: IntArray? = null
@@ -376,7 +383,7 @@ object BrightFormat {
     }
     fun replyWave(pass: String, nonce: Int, ok: Boolean, perSec: Int = 30): Wave {
         val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }
-        val ts = 1.0 / perSec
+        val ts = 1.0 / replyRate(perSec)
         for (b in replyPattern(pass, nonce, ok, perSec)) w.add(ts, if (b == 1) ts else 0.0)
         repeat(TAIL) { w.add(SLOT, 0.0) }
         return w
