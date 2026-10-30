@@ -75,6 +75,11 @@ class MainActivity : Activity() {
             "aim-send" -> showAimSend(intent.getIntExtra("rate", 15), intent.getIntExtra("secs", 600))
             // adb: --es mode aim-recv [--ei rate 15]   (beeps louder/faster the better it sees the aiming pattern)
             "aim-recv" -> withCamera { showAimRecv(intent.getIntExtra("rate", 15)) }
+            // adb: --es mode mirror [--es text "..."] [--es exp 500,2000,8000 (microseconds, one run each)] [--ei iso 100] [--es pass W]
+            //      (Oct 30: one phone faces a mirror, blinks a real message and reads its own light)
+            "mirror" -> { intent.getStringExtra("pass")?.let { savePass(it) }
+                withCamera { showMirror(intent.getStringExtra("text") ?: "MIRROR CHECK HELLO",
+                    (intent.getStringExtra("exp") ?: "500,2000,8000").split(",").mapNotNull { it.trim().toIntOrNull() }, intent.getIntExtra("iso", 100)) } }
             // Oct 19 shorter-opening test (both phones the same): [--ei sync 15 (short opening pattern 15 steps, not 31)] [--ez barker false]
             "talk" -> { intent.getStringExtra("pass")?.let { savePass(it) }
                 BrightFormat.shortSync15 = intent.getIntExtra("sync", 31) == 15; BrightFormat.shortBarker = intent.getBooleanExtra("barker", true)
@@ -797,6 +802,22 @@ class MainActivity : Activity() {
             status = text("", 16f, color = Color.rgb(255, 200, 0))
         }
         if (auto) go()
+    }
+
+    private fun showMirror(text: String, exps: List<Int>, iso: Int) {
+        onMenu = false
+        val cams = CamSession.backCameras(this)
+        if (cams.isEmpty()) { scrollPage { text("No back camera found.") }; return }
+        val m = MirrorCheck(this, savedPass(), text, exps, iso)
+        var status: android.widget.TextView? = null
+        scrollPage { text("Mirror check", 22f, bold = true); status = text("Face the mirror: starting in 10 s", 18f, bold = true, color = Color.rgb(255, 200, 0)) }
+        stopCurrent = { m.alive = false }
+        Thread {
+            for (i in 10 downTo 1) { if (!m.alive) return@Thread; runOnUiThread { status?.text = "Face the mirror: starting in $i s" }; Thread.sleep(1000) }
+            val r = m.go(cams[0].first) { t -> runOnUiThread { status?.text = t } }
+            val path = Results.save(this, "mirror", Results.header("Mirror check") + r)
+            runOnUiThread { status?.text = r.lineSequence().filter { "exposure:" in it }.joinToString("\n") + "\nSaved: $path" }
+        }.start()
     }
 
     private fun showCalibRecv(iso: Int, secs: Int) {
