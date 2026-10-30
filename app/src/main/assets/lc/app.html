@@ -493,12 +493,16 @@ const myTests = () => TESTS[/POCO/.test(LC.phone()) ? 'POCO' : '8T'];
 let tRun = false, tPause = false, tStep = null;
 // Oct 19 (founder): a countdown after the start tap, to set the phone back in its stand. A tap during it cancels.
 const T_COUNT = 15; let tCount = 0, tCountTimer = null;
-function testLabel(){ const L = myTests(), i = store.get('lc.test.i', 0), b = $('testBtn'); if (!b) return;
+// The saved place belongs to one test list: a build that adds or moves tests starts again from the first one.
+function testPos(L){ const sig = L.map(t => t[0]).join(',');
+  if (store.get('lc.test.list', '') !== sig) { store.set('lc.test.list', sig); store.set('lc.test.i', 0); store.set('lc.test.res', {}) }
+  return store.get('lc.test.i', 0) }
+function testLabel(){ const L = myTests(), i = testPos(L), b = $('testBtn'); if (!b) return;
   if (tCountTimer) { b.textContent = 'TEST · STARTS IN ' + tCount + ' S · TAP TO CANCEL'; return }
   b.textContent = tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
     : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0] }
 function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
-function testTap(){ const L = myTests(); let i = store.get('lc.test.i', 0);
+function testTap(){ const L = myTests(); let i = testPos(L);
   if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
   if (tStep && tStep.wait && tStep.kind === 'hand') { const s0 = tStep; s0.wait = false; s0.hold = true; tLog(s0.code + ' tapped: sending in ' + T_COUNT + ' s')
     line('Pick up the 8T now: sending in ' + T_COUNT + ' s.', 5000)
