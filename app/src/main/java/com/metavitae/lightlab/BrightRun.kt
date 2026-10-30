@@ -159,11 +159,12 @@ class BrightSender(private val ctx: Context) {
     }
 
     /** Aiming: play the aiming pattern over and over until stopped or `maxSec` is up. */
-    fun aim(perSec: Int, maxSec: Double) {
+    fun aim(perSec: Int, maxSec: Double) = play(BrightFormat.aimWave(perSec, maxSec))
+    /** Plays a light pattern once, with the plain torch switch (the camera must be closed). */
+    fun play(w: BrightFormat.Wave) {
         val cm = ctx.getSystemService(CameraManager::class.java)
         val id = torchCamera(ctx)?.first ?: return
         try { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Exception) {}
-        val w = BrightFormat.aimWave(perSec, maxSec)
         var state = false
         val t0 = System.nanoTime() + 50_000_000
         running = true

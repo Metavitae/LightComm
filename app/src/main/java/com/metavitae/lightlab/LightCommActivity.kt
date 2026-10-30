@@ -46,6 +46,10 @@ class LightCommActivity : Activity() {
         }
     }
     private var findLogged = 0L
+    @Volatile private var beaconScore = 0.0
+    @Volatile private var beaconAt = 0L
+    /** Last time the chat's beacon was seen (for "near" and for one sound per sighting, not a beep every look). */
+    @Volatile private var beaconSeenAt = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(b: Bundle?) {
@@ -96,7 +100,7 @@ class LightCommActivity : Activity() {
         events.add(o)
     }
 
-    private fun stopTalk() { talk?.stop(); talk = null; talkKey = ""; phase = "idle"; file?.append("\nSTOPPED.\n"); widget("LightComm", "Not listening · tap to open") }
+    private fun stopTalk() { beaconSeenAt = 0L; talk?.stop(); talk = null; talkKey = ""; phase = "idle"; file?.append("\nSTOPPED.\n"); widget("LightComm", "Not listening · tap to open") }
     // Widget: changes only when something happens (never polls, never wakes the camera).
     private var chatName = ""
     private var unseen = 0
@@ -117,6 +121,7 @@ class LightCommActivity : Activity() {
         val opts = Talk.Opts(emptyList(), 5, true, true, 2.0, 12.0, 4, 2.0, 0.0, 0, emptyList(), "lightcomm", "lightcomm")
         val t = Talk(this, preview, cams[0].first, MessageFormat.norm(key), opts, f) { }
         t.watchFind = true
+        t.beaconOn = beaconWanted && key != SWAP_KEY   // face to face: only the two cards, no beacon blinking in between
         t.events = object : Talk.Events {
             override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {
                 widget("Sending as light", chatName); phase = "sending"; push("sending", "k" to k, "attempt" to attempt, "perSec" to mode.perSec, "short" to short)
@@ -135,6 +140,18 @@ class LightCommActivity : Activity() {
                     if (!visible) { unseen++; widget(BrightFormat.phoneName(r.phoneTag), "$unseen new · tap to open") } else widget("Listening", chatName) }
             }
             override fun problem(text: String) { push("problem", "text" to text) }
+            override fun beacon(score: Double) {
+                beaconScore = score; beaconAt = System.currentTimeMillis()
+                if (score >= BrightFormat.BEACON_SEEN) {
+                    // A new sighting (not seen for 2 min): one sound, a line in the file, and the widget if the app is in the background.
+                    if (beaconAt - beaconSeenAt > 120_000) {
+                        file?.append(String.format(java.util.Locale.US, "# beacon seen: match %.2f\n", score))
+                        cue(ToneGenerator.TONE_PROP_ACK, 200); push("near", "score" to score)
+                        if (!visible) widget("Near", chatName)
+                    }
+                    beaconSeenAt = beaconAt
+                }
+            }
             override fun aim(score: Double) {
                 findScore = score; findAt = System.currentTimeMillis()
                 if (score >= 0.55 && findAt - findLogged > 3000) { findLogged = findAt; file?.append(String.format(java.util.Locale.US, "# find seen: match %.2f\n", score)) }
@@ -149,8 +166,18 @@ class LightCommActivity : Activity() {
         t.start()
     }
 
+    private val SWAP_KEY = "LIGHTCOMM FACE TO FACE"
+    /** "Us" beacon switched on by the person (kept across chats and restarts of the talk). */
+    @Volatile private var beaconWanted = false
+
     /** What the page can call. Strings in, JSON strings out. */
     inner class Bridge {
+        @JavascriptInterface fun beacon(on: Boolean) { beaconWanted = on; talk?.beaconOn = on && talkKey != SWAP_KEY; file?.append("# screen: beacon ${if (on) "on" else "off"}\n") }
+        /** Android's share sheet (WhatsApp, SMS, email...) with this text. */
+        @JavascriptInterface fun share(text: String) = runOnUiThread {
+            try { startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(android.content.Intent.EXTRA_TEXT, text), "Invite with")) } catch (_: Exception) {}
+        }
         @JavascriptInterface fun phone(): String = BrightFormat.KNOWN_PHONES[Build.MODEL] ?: Build.MODEL
         @JavascriptInterface fun open(key: String) = runOnUiThread { startTalk(key) }
         @JavascriptInterface fun chatName(name: String) { chatName = name; widget("Listening", name) }
@@ -187,6 +214,9 @@ class LightCommActivity : Activity() {
                 if (phase == "starting" && rx.readyAt > 0) phase = "listening"
                 o.put("hearing", rx.hearing).put("progress", rx.progress()).put("waiting", t.waiting())
                 o.put("find", if (System.currentTimeMillis() - findAt < 2000) findScore else 0.0)
+                o.put("beacon", if (System.currentTimeMillis() - beaconAt < 3000) beaconScore else 0.0)
+                if (beaconSeenAt > 0) o.put("nearAgo", (System.currentTimeMillis() - beaconSeenAt) / 1000)
+                o.put("beaconOn", t.beaconOn)
                 o.put("live", JSONArray(rx.liveliness().map { it.toDouble() }))
                 o.put("orient", t.sensorOrientation)
                 if (rx.readyAt > 0) o.put("bg", rx.background()).put("top", rx.brightTop())

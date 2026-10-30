@@ -78,6 +78,13 @@ button{cursor:pointer}
 input[type=range]{width:100%;accent-color:var(--ink)}
 .field{width:100%;height:52px;border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:0 16px;font-size:17px;outline:none;margin-top:6px}
 .seg{display:flex;gap:8px}.seg button{flex:1;height:48px;border-radius:12px;border:1px solid var(--line);background:var(--panel);font-weight:500}
+#vListen{overflow-y:auto}
+.grp{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.grp .pill{font-size:15px}
+.emo{font-size:24px;min-width:56px}
+.step{display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.step .st{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.08em;color:var(--dim)}
+.step.done{border-color:var(--hi)}.step.done .st{color:var(--hi)}
 .seg button.sel{border-color:var(--ink);background:var(--ink);color:var(--on);font-weight:800}
 </style>
 </head>
@@ -105,7 +112,11 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <div style="font-size:15px;line-height:1.35;color:var(--dim);margin-top:6px">Only people with that chat's key words can send or read it.</div>
   </div>
   <div style="flex:1"></div>
-  <div style="padding:6px 20px 24px;display:flex;gap:12px">
+  <div style="padding:6px 20px 0;display:flex;gap:12px">
+    <button class="pill" style="flex:1" onclick="openSwap()">Face to face</button>
+    <button class="pill" style="flex:1" onclick="invite()">Invite</button>
+  </div>
+  <div style="padding:12px 20px 24px;display:flex;gap:12px">
     <button class="bigbtn outline" onclick="newChat(true)">Join</button>
     <button class="bigbtn solid" onclick="newChat(false)">New chat</button>
   </div>
@@ -149,9 +160,11 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <div class="bar"><span id="holdBar"></span></div>
   </div>
   <div style="padding:10px 16px 0;display:flex;gap:8px;overflow-x:auto">
-    <button class="pill" onclick="send('OK')">OK</button>
-    <button class="pill" onclick="send('Need help')" style="border-color:var(--ink)">Need help</button>
-    <button class="pill" onclick="send('Wait')">Wait</button>
+    <button class="pill" onclick="sendPreset(0)">OK</button>
+    <button class="pill" onclick="sendPreset(5)" style="border-color:var(--ink)">Need help</button>
+    <button class="pill" onclick="sendPreset(4)">Wait</button>
+    <button class="pill" onclick="sendPreset(9)">I'm here</button>
+    <button class="pill mono" onclick="show('vPresets')" aria-label="More ready-made messages">MORE</button>
     <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
   </div>
   <div style="padding:8px 16px 0"><button class="pill mono" id="testBtn" style="width:100%;font-weight:800" onclick="testTap()">TEST</button></div>
@@ -177,10 +190,46 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <div style="margin-top:8px;font-size:17px;line-height:1.3;color:var(--dim)" id="lsHint">You do not need to see them. Any wall, floor or ceiling that carries their light counts.</div>
     <div class="bar"><span id="lsBar"></span></div>
   </div>
-  <div style="flex:1"></div>
+  <div style="margin:16px 20px 0;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px">
+    <div class="cap" style="font-size:11px">US BEACON · BLINKS EVERY 30 S</div>
+    <div style="margin-top:8px;font-size:17px;line-height:1.3" id="bcText">Nobody seen yet.</div>
+    <div class="seg" style="margin-top:10px"><button data-bc="off" onclick="setBeacon(false)">Beacon off</button><button data-bc="on" onclick="setBeacon(true)">Beacon on</button></div>
+  </div>
+  <div style="flex:1;min-height:16px"></div>
   <div style="padding:0 20px 24px;display:flex;gap:12px">
     <button class="bigbtn outline" onclick="doFind()">Find: blink 60 s</button>
     <button class="bigbtn solid" onclick="show('vChat')">Back to chat</button>
+  </div>
+</section>
+
+<!-- ============ READY-MADE MESSAGES (Oct 29: each goes as one short code) ============ -->
+<section class="view" id="vPresets">
+  <div class="top"><button class="icon" onclick="goBack()" aria-label="Back"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
+    <div style="font-weight:800;font-size:19px;padding-left:6px">Ready-made</div></div>
+  <div style="padding:6px 20px 20px;overflow-y:auto">
+    <div style="font-size:15px;color:var(--dim);line-height:1.35;margin:10px 0 4px">Each one goes as one short code, so it is on light for less time than spelling it out.</div>
+    <div id="presetGroups"></div>
+  </div>
+</section>
+
+<!-- ============ FACE TO FACE (Oct 29: swap names and private key words by light) ============ -->
+<section class="view" id="vSwap">
+  <div class="top"><button class="icon" onclick="leaveSwap()" aria-label="Back"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
+    <div style="font-weight:800;font-size:19px;padding-left:6px">Face to face</div></div>
+  <div style="padding:20px;display:flex;flex-direction:column;gap:14px;overflow-y:auto">
+    <div style="border:1px dashed var(--line);border-radius:16px;padding:14px 16px">
+      <ol style="margin:0;padding-left:20px;font-size:16px;line-height:1.45">
+        <li>Both of you open <b>Face to face</b>.</li>
+        <li>Hold the phones back to back, 30 cm to 1 m (1-3 ft) apart.</li>
+        <li>Keep still until both cards show <b>done</b>.</li>
+      </ol>
+      <div style="font-size:14px;color:var(--dim);margin-top:8px;line-height:1.35">You get a private chat with each other. Do it where nobody else is pointing a phone at you.</div>
+    </div>
+    <label class="cap">YOUR NAME<input class="field" id="swapName" maxlength="16" placeholder="Your name" oninput="setName(this.value)"></label>
+    <div class="step" id="swapMine"><div style="flex:1"><div style="font-weight:800;font-size:17px">Your card</div><div class="st" id="swapMineSt">NOT SENT YET</div></div></div>
+    <div class="step" id="swapTheirs"><div style="flex:1"><div style="font-weight:800;font-size:17px" id="swapTheirName">Their card</div><div class="st" id="swapTheirSt">WAITING FOR THEIR LIGHT</div></div></div>
+    <div id="swapLine" style="font-size:16px;line-height:1.35;color:var(--dim)"></div>
+    <button class="bigbtn solid" style="flex:none" id="swapBtn" onclick="swapGo()">Swap by light</button>
   </div>
 </section>
 
@@ -198,6 +247,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
         <li>Stand where it beeps fast. Tap <b>OK</b>. Wait for <b>got it</b>, then <b>(COPY) OK</b>.</li>
       </ol>
     </div>
+    <label class="cap">YOUR NAME (SHOWN TO PEOPLE YOU SWAP WITH)<input class="field" id="myName" maxlength="16" placeholder="Your name" oninput="setName(this.value)"></label>
     <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
     <div><div class="cap">SOUNDS (ONLY FOR THIS PHONE'S OWN EVENTS)</div><div class="seg" style="margin-top:8px">
@@ -215,18 +265,26 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 
 <script>
 const $ = id => document.getElementById(id);
-const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, brightness(){}, maxVolume(){}, setSounds(){}, cameraBehind(){}, poll:()=>'{"events":[],"phase":"idle"}' };
+const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, beacon(){}, share(){}, brightness(){}, maxVolume(){}, setSounds(){}, cameraBehind(){}, poll:()=>'{"events":[],"phase":"idle"}' };
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
                 set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
 let cur = null, msgs = [], auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
-const me = LC.phone(); $('me').textContent = me.toUpperCase(); $('me2').textContent = me.toUpperCase();
+const me = LC.phone();
+function drawMe(){ const n = store.get('lc.name', ''); $('me').textContent = (n ? n + ' · ' : '') + me.toUpperCase(); $('me2').textContent = $('me').textContent } drawMe();
+// Oct 29: your name, typed once. It travels only in a face-to-face swap (messages don't carry it: it would cost light time).
+function setName(v){ v = v.replace(/[\u001c-\u001f]/g, '').slice(0, 16); store.set('lc.name', v.trim()); drawMe();
+  if ($('myName').value !== v) $('myName').value = v; if ($('swapName').value !== v) $('swapName').value = v }
+/** Who sent it: a contact's name when we know that phone, else the phone's model (from its header tag). */
+function whoIs(from){ if (cur && cur.contact) return cur.name;
+  const c = chats.find(x => x.contact && x.phone === from); return c ? c.name : from }
 
 function show(id){ const prev = document.querySelector('.view.on'); if (prev && prev.id !== id) history.push(prev.id);
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === id)); if (id === 'vChats') drawChats(); if (id === 'vSettings') drawSettings(); }
 function goBack(){ const v = document.querySelector('.view.on').id;
   if (v === 'vChats') return false;
   if (v === 'vChat') { leaveChat(); return true }
+  if (v === 'vSwap') { leaveSwap(); return true }
   const p = history.pop(); show(p && p !== v ? p : (cur ? 'vChat' : 'vChats')); history.pop(); return true }
 window.goBack = goBack;
 
@@ -242,9 +300,75 @@ function drawSettings(){ const m = store.get('lc.mode', 'red');
   document.querySelectorAll('[data-s]').forEach(b => b.classList.toggle('sel', b.dataset.s === store.get('lc.sounds', 'on')));
   document.querySelectorAll('[data-b]').forEach(x => x.classList.toggle('sel', x.dataset.b === store.get('lc.back', 'zones')));
   $('autoOn').classList.toggle('sel', auto); $('autoOff').classList.toggle('sel', !auto);
+  $('myName').value = store.get('lc.name', '');
+  document.querySelectorAll('[data-bc]').forEach(b => b.classList.toggle('sel', b.dataset.bc === (store.get('lc.beacon', false) ? 'on' : 'off')));
   $('night').value = store.get('lc.night', 40); $('nightPct').textContent = $('night').value + '%';
   $('keyShow').textContent = cur ? cur.key : 'open a chat first' }
+LC.beacon(store.get('lc.beacon', false));
 setMode(store.get('lc.mode', 'red')); setNight(store.get('lc.night', 40)); LC.setSounds(store.get('lc.sounds', 'on')); setBack(store.get('lc.back', 'zones')); if (store.get('lc.sounds', 'on') === 'on') LC.maxVolume();
+
+// ---------- ready-made messages (Oct 29, founder: each one sent as one tiny code) ----------
+// On light: the sign \u001E and one letter (2 bytes) instead of the words. Ids never change (both phones must agree);
+// new ones only get new ids. Wording from Chat's code table v0 (Oct 19). A phone without this list shows "ready-made message n".
+const PRESETS = [
+  [0,'OK'],[1,'Yes'],[2,'No'],[3,'Got it'],[4,'Wait'],[5,'Need help, urgent'],[6,'Medical emergency'],[7,'Danger, move away'],
+  [8,'All clear, safe'],[9,"I'm here"],[10,'Come here'],[11,'On my way'],[12,'Arrived'],[13,'Stay where you are'],[14,'Follow me'],
+  [15,'Turn back'],[16,'Heading back to base'],[17,'Where are you?'],[18,'Say again'],[19,'Send slower'],[20,'Weak, move closer'],
+  [21,'Stop sending'],[22,'Your turn'],[23,'Finished, no reply needed'],[24,'Person down'],[25,'Fire'],[26,'Need water'],[27,'Found them'],
+  [40,'\u{1F44D}'],[41,'\u{1F44E}'],[42,'\u2764\uFE0F'],[43,'\u26A0\uFE0F'],[44,'\u{1F198}'],[45,'\u{1F526}'],[46,'\u{1F600}'],[47,'\u{1F64F}']];
+const PRESET_GROUPS = [['DISTRESS', [5,6,7,24,25,26]], ['REPLIES', [0,1,2,3,4,18,19,20,21,22,23]], ['WHERE AND MOVING', [9,10,11,12,13,14,15,16,17,27,8]], ['EMOJI', [40,41,42,43,44,45,46,47]]];
+const PRE = '\u001e';
+const presetText = id => (PRESETS.find(p => p[0] === id) || [id, 'ready-made message ' + id])[1];
+const presetWire = id => PRE + String.fromCharCode(0x21 + id);
+/** What a received text says: a ready-made code becomes its words. */
+function readWire(t){ return t.length === 2 && t[0] === PRE ? presetText(t.charCodeAt(1) - 0x21) : t }
+function sendPreset(id){ send(presetText(id), false, presetWire(id)); if (document.querySelector('.view.on').id === 'vPresets') show('vChat') }
+(function(){ const box = $('presetGroups');
+  PRESET_GROUPS.forEach(([title, ids]) => { const h = document.createElement('div'); h.className = 'cap'; h.style.marginTop = '18px'; h.textContent = title; box.appendChild(h);
+    const g = document.createElement('div'); g.className = 'grp';
+    ids.forEach(id => { const b = document.createElement('button'); b.className = 'pill' + (id >= 40 ? ' emo' : ''); b.textContent = presetText(id);
+      if (title === 'DISTRESS') b.style.borderColor = 'var(--ink)'; b.onclick = () => sendPreset(id); g.appendChild(b) });
+    box.appendChild(g) }) })();
+
+// ---------- people (Oct 29): face-to-face swap by light, invite ----------
+// Both phones open the same public swap channel and each sends its card: \u001C name \u001F its own new key words.
+// Each phone saves the other as a contact with a private chat whose key words are both halves (the same on both phones).
+const SWAP_KEY = 'LIGHTCOMM FACE TO FACE', CARD = '\u001c', SEP = '\u001f';
+let swap = null;
+function rndKey(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; let k = ''; const r = new Uint32Array(8); crypto.getRandomValues(r); r.forEach(x => k += a[x % a.length]); return k }
+function openSwap(){ swap = { mine: rndKey(), state: 'idle', theirs: null, k: 0 }; $('swapName').value = store.get('lc.name', '');
+  cur = { id:'swap', name:'Face to face', key:SWAP_KEY, swap:true }; msgs = []; LC.open(SWAP_KEY); show('vSwap'); drawSwap('Waking the camera…') }
+function leaveSwap(){ LC.close(); cur = null; swap = null; history = []; show('vChats') }
+function swapGo(){ const n = store.get('lc.name', ''); if (!n) { drawSwap('Type your name first.'); $('swapName').focus(); return }
+  if (swap.state === 'sending') return;
+  swap.state = 'sending'; swap.k = LC.send(CARD + n + SEP + swap.mine); LC.log('swap: card sent'); drawSwap('Sending your card. Keep still.') }
+function swapCard(e){ const t = e.text.slice(1).split(SEP); if (t.length !== 2 || !t[0] || t[1].length < 6) return;
+  const name = t[0], key = [swap.mine, t[1]].sort().join(' ');
+  let c = chats.find(x => x.contact && x.name === name && x.phone === e.from);
+  if (c) c.key = key; else { c = { id:'p' + Date.now(), name, key, contact:true, phone:e.from }; chats.push(c) }
+  store.set('lc.chats', chats); swap.theirs = c; LC.log('swap: card from ' + e.from + ' saved');
+  if (swap.state === 'idle') swapGo() }   // they started first: answer with ours
+function drawSwap(note){ if (!swap) return; const m = $('swapMineSt'), tn = $('swapTheirName'), ts = $('swapTheirSt');
+  m.textContent = { idle:'NOT SENT YET', sending:'SENDING AS LIGHT…', done:'DONE · THEY HAVE IT', failed:'NOT DELIVERED · TAP SWAP AGAIN' }[swap.state];
+  $('swapMine').classList.toggle('done', swap.state === 'done');
+  tn.textContent = swap.theirs ? swap.theirs.name : 'Their card'; ts.textContent = swap.theirs ? 'DONE · SAVED AS A CONTACT' : 'WAITING FOR THEIR LIGHT';
+  $('swapTheirs').classList.toggle('done', !!swap.theirs);
+  const both = swap.state === 'done' && swap.theirs;
+  $('swapBtn').textContent = both ? 'Open the chat with ' + swap.theirs.name : swap.state === 'failed' ? 'Swap again' : 'Swap by light';
+  $('swapBtn').onclick = both ? () => { const c = swap.theirs; LC.close(); swap = null; openChat(c) } : () => { if (swap.state === 'failed') swap.state = 'idle'; swapGo() };
+  if (note) $('swapLine').textContent = note }
+function swapEvent(e){
+  if (e.type === 'sent' && e.k === swap.k) { swap.state = e.ok ? 'done' : 'failed'; drawSwap(e.ok ? (swap.theirs ? 'Done. You are each other\'s contacts.' : 'They have your card. Waiting for theirs.') : 'Your card did not get through. Move a little closer, then tap Swap again.') }
+  else if (e.type === 'heard' && e.ok && !e.dup && e.text[0] === CARD) { swapCard(e); drawSwap('Their card arrived: ' + swap.theirs.name + '.') }
+  else if (e.type === 'heard' && !e.ok) drawSwap('Saw their light but could not read it yet. Keep still.')
+  else if (e.type === 'problem') drawSwap(e.text) }
+// Invite (founder Oct 26): the share link only says "get the app", never key words. No public download yet, so no link in it.
+function invite(){ const n = store.get('lc.name', ''); LC.share((n ? n + ' would like' : 'I would like') + ' to talk with you by light, with LightComm: no network needed. Ask me for the app, then we swap face to face.') }
+
+// ---------- us beacon (Oct 29) ----------
+function setBeacon(on){ store.set('lc.beacon', on); LC.beacon(on); drawSettings(); line(on ? 'Beacon on: this phone blinks this chat\'s own pattern every 30 s while idle.' : 'Beacon off.', 5000) }
+const SEEN_BEACON = '(SEEN BEACON)';
+const nearWho = () => cur ? (cur.contact ? cur.name : 'Someone from ' + cur.name) : 'Someone';
 
 // ---------- chats ----------
 function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;
@@ -269,7 +393,7 @@ function openChat(c){ cur = c; msgs = store.get('lc.msgs.' + c.id, []);
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
   $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); toEnd(false); testLabel() }
 function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
-function save(){ if (cur) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
+function save(){ if (cur && !cur.swap) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
 // The list stays where the person scrolled it (it used to jump to the bottom on every status change). It follows the
 // newest message only when already at the bottom, or when this phone just sent something.
 let drawnLen = 0, unseen = 0, followEnd = false;
@@ -309,7 +433,7 @@ function splitParts(text){ if (LC.bytes(text) <= 80) return [text];
     out.push(text.slice(a, best)); a = best }
   return out.length > 9 ? null : out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + ' ' + t) }
 function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…';
-  if (!m.parts) { const ps = splitParts(m.text); if (!ps) { m.state = 'failed'; m.meta = 'TOO LONG · MAKE IT SHORTER'; drawMsgs(); return } m.parts = ps.map(t => ({ t, ok:false })) }
+  if (!m.parts) { const ps = splitParts(m.wire || m.text); if (!ps) { m.state = 'failed'; m.meta = 'TOO LONG · MAKE IT SHORTER'; drawMsgs(); return } m.parts = ps.map(t => ({ t, ok:false })) }
   m.parts.forEach(p => { if (!p.ok) p.k = LC.send(p.t) }); m.k = (m.parts.find(p => !p.ok) || {}).k; drawMsgs() }
 // Stop: the light goes off at once, the message leaves the chat and its text goes back in the typing box.
 const stoppedMsgs = {};
@@ -317,7 +441,7 @@ function stopEdit(m){ (m.parts || []).forEach(p => { if (!p.ok) LC.stop(p.k) });
   const i = msgs.indexOf(m); if (i >= 0) msgs.splice(i, 1);
   const b = $('box'), was = b.value.trim(); b.value = was ? m.text + ' ' + was : m.text; drawMsgs(); b.focus();
   line('Stopped. Change the message and send it again.', 5000) }
-function send(text, quiet){ if (!cur || !text) return; const m = { dir:'out', text, time:now() }; msgs.push(m); followEnd = !quiet; enqueue(m) }
+function send(text, quiet, wire){ if (!cur || !text) return; const m = { dir:'out', text, time:now() }; if (wire) m.wire = wire; msgs.push(m); followEnd = !quiet; enqueue(m) }
 function sendBox(){ const v = $('box').value.trim(); if (v) { send(v); $('box').value = '' } }
 /** The message (still being sent) that part k belongs to, and the part: [m, p, part number]. */
 function bySession(k){ for (let i = msgs.length - 1; i >= 0; i--) { const m = msgs[i]; if (m.dir !== 'out' || m.state !== 'pending' || !m.parts) continue;
@@ -359,9 +483,12 @@ const TESTS = {
     ['H2','plain','H2 HELD STEADY'], ['H3','plain','H3 HELD STEADY'],
     ['H4','hand','H4 HELD NATURALLY', 'H4-H6: leave THIS phone (POCO) on its stand. 1) Tap TEST. 2) Hold the OTHER phone (8T) 1-2 m away the way you read a message, no aiming. Keep holding it through H6. Sending starts 15 s after the tap.'],
     ['H5','plain','H5 HELD NATURALLY'], ['H6','plain','H6 HELD NATURALLY'],
+    // Oct 29: ready-made code and the us beacon (the 8T, auto-answer on, says "(SEEN BEACON)" when it sees this phone's beacon).
+    ['P1','preset',5], ['N1','beacon',''],
     ['D1','cam','D1 CAMERA CAME BACK']],
   '8T': [['A4','plain','A4 HELLO FROM THE 8T'], ['A5','plain','A5 HELLO FROM THE 8T'], ['A6','plain','A6 HELLO FROM THE 8T'],
-    ['B3','stop','B3'], ['B4','stop','B4'], ['C3','both','C3'], ['C4','both','C4'], ['E1','plain','E1' + LONG], ['D2','cam','D2 CAMERA CAME BACK']] };
+    ['B3','stop','B3'], ['B4','stop','B4'], ['C3','both','C3'], ['C4','both','C4'], ['E1','plain','E1' + LONG],
+    ['P2','preset',11], ['N2','beacon',''], ['D2','cam','D2 CAMERA CAME BACK']] };
 const myTests = () => TESTS[/POCO/.test(LC.phone()) ? 'POCO' : '8T'];
 let tRun = false, tPause = false, tStep = null;
 // Oct 19 (founder): a countdown after the start tap, to set the phone back in its stand. A tap during it cancels.
@@ -381,6 +508,7 @@ function testTap(){ const L = myTests(); let i = store.get('lc.test.i', 0);
   if (tCountTimer) { clearInterval(tCountTimer); tCountTimer = null; line('Test start cancelled.', 4000); testLabel(); return }
   if (tRun) { tPause = !tPause; testLabel(); return }
   if (i >= L.length) { i = 0; store.set('lc.test.i', 0) }
+  if (i === 0) store.set('lc.test.res', {})
   tCount = T_COUNT; testLabel(); line('Put the phone in its stand: the test starts in ' + T_COUNT + ' s.', 4000)
   tCountTimer = setInterval(() => { tCount--; if (tCount > 0) { testLabel(); return }
     clearInterval(tCountTimer); tCountTimer = null
@@ -392,16 +520,24 @@ function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.te
   tStep = { code, kind, t0: Date.now(), phase: 0 };
   if (kind === 'hand') { tStep.text = text; tStep.wait = true; line(ask, 600000); tLog(code + ' waiting for the person (handheld)'); return }
   if (kind === 'cam') { tStep.text = text; tStep.wait = true; line(code + ': open the Camera app for about 5 s, come back here, then tap TEST.', 600000); tLog(code + ' waiting for the camera step'); return }
+  if (kind === 'beacon') { tStep.n0 = msgs.length; tStep.prev = store.get('lc.beacon', false); LC.beacon(true);
+    line(code + ': beacon on. Waiting for the other phone to say it sees it.', 20000); tLog(code + ' beacon on'); return }
+  if (kind === 'preset') { tStep.text = presetText(text); send(tStep.text, false, presetWire(text)); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started (one code)'); return }
   tStep.text = kind === 'stop' ? code + ' STOP ME' : kind === 'both' ? code + ' FIRST' : text;
   send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started') }
-function endTest(result){ const L = myTests(); tLog(tStep.code + ' ' + result + ' after ' + Math.round((Date.now() - tStep.t0) / 1000) + ' s');
+function endTest(result){ const L = myTests(), sec = Math.round((Date.now() - tStep.t0) / 1000); tLog(tStep.code + ' ' + result + ' after ' + sec + ' s');
+  if (tStep.kind === 'beacon') LC.beacon(tStep.prev);
+  // Oct 29: one summary line per phone at the end (reading results = one line, not the whole file).
+  const res = store.get('lc.test.res', {}); res[tStep.code] = (/^done/.test(result) ? 'ok ' : 'NO ') + sec + 's'; store.set('lc.test.res', res);
   line('Test ' + tStep.code + ': ' + result + '.', 6000);
   store.set('lc.test.i', store.get('lc.test.i', 0) + 1); tStep = null;
-  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) line('All tests on this phone done.', 10000); testLabel(); return }
+  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) { const res = store.get('lc.test.res', {}), sum = L.map(t => t[0] + ' ' + (res[t[0]] || '-')).join(', ');
+      tLog('SUMMARY ' + sum); line('All tests on this phone done: ' + sum, 60000) } testLabel(); return }
   setTimeout(() => { if (tRun && !tStep && cur) { startTest(); testLabel() } }, 5000); testLabel() }
 function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;
   if (!cur) { tRun = false; tStep = null; testLabel(); return }   // left the chat: paused, this test runs again next time
   if (age > (s.code[0] === 'E' ? 900 : 480)) return endTest('timed out');
+  if (s.kind === 'beacon') { if (msgs.slice(s.n0).some(m => m.dir === 'in' && m.text === SEEN_BEACON)) endTest('done, seen by the other phone'); return }
   if (s.kind === 'stop' && s.phase === 0 && m && m.meta && m.meta.indexOf('SENDING AS LIGHT') === 0) { s.phase = 1; s.blink = Date.now() }
   if (s.kind === 'stop' && s.phase === 1 && Date.now() - s.blink >= 15000) {
     stopEdit(m); $('box').value = ''; s.text = s.code + ' AFTER THE STOP'; send(s.text); s.m = msgs[msgs.length - 1]; s.phase = 2; tLog(s.code + ' stopped after 15 s of blinking, sent the next at once'); return }
@@ -414,7 +550,10 @@ function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = t
 function tick(){
   let st; try { st = JSON.parse(LC.poll()) } catch (e) { return }
   for (const e of st.events) {
-    if (e.type === 'sending') { const [m, , j] = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (m.parts.length > 1 ? ' · PART ' + j + ' OF ' + m.parts.length : '') + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
+    if (cur && cur.swap) { if (swap) swapEvent(e); continue }
+    if (e.type === 'near') { line(nearWho() + ' is near: their beacon is in sight.', 8000);
+      if (auto) send(SEEN_BEACON, true) }   // test plan: the beacon phone waits for this
+    else if (e.type === 'sending') { const [m, , j] = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (m.parts.length > 1 ? ' · PART ' + j + ' OF ' + m.parts.length : '') + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
       line(e.attempt > 1 ? 'No answer yet. Sending again' + (e.perSec < 30 ? ', slower.' : '.') : 'Sending as light. Keep the phone still.') }
     else if (e.type === 'stopped') { delete stoppedMsgs[e.k] }
     else if (e.type === 'sent' && e.ok && stoppedMsgs[e.k]) {
@@ -438,24 +577,29 @@ function tick(){
       const sig = 'SIGNAL ' + bars(e.snr) + '/5 · ' + e.zones + ' ZONES' + (e.fine ? ' + ' + e.fine + ' FINE' : ''), pt = e.ok && !e.dup ? PART.exec(e.text) : null;
       if (pt) { const key = e.from + pt[1] + pt[3], n = +pt[3];
         let m = null; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'in' && msgs[i].grp === key && !msgs[i].whole) { m = msgs[i]; break }
-        if (!m) { m = { dir:'in', from:e.from, grp:key, got:{}, time:now() }; msgs.push(m) }
+        if (!m) { m = { dir:'in', from:whoIs(e.from), grp:key, got:{}, time:now() }; msgs.push(m) }
         m.got[pt[2]] = pt[4]; const have = Object.keys(m.got).length;
         m.text = Array.from({ length:n }, (_, i) => m.got[i + 1] !== undefined ? m.got[i + 1] : ' … ').join('');
         m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
-        line(m.whole ? 'Message from ' + e.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + e.from + '. The rest is coming.', 5000);
+        line(m.whole ? 'Message from ' + m.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + m.from + '. The rest is coming.', 5000);
         if (m.whole && auto && !COPY.test(m.text)) send('(COPY) ' + m.text, true) }
-      else if (e.ok && !e.dup) { msgs.push({ dir:'in', from:e.from, text:e.text, time:now(), meta:'RECEIVED · ' + sig }); drawMsgs();
+      else if (e.ok && !e.dup) { const words = readWire(e.text);
+        msgs.push({ dir:'in', from:whoIs(e.from), text:words, time:now(), meta:'RECEIVED · ' + (words !== e.text ? 'ONE CODE · ' : '') + sig }); drawMsgs();
         const hm = /^H([1-6]) HELD/.exec(e.text);   // Oct 24: the handheld steps were shown only on the POCO; the phone in the hand says it too
         if (hm) line(+hm[1] < 3 ? 'Handheld test: you hold THIS phone. Keep its back camera pointed at the other phone until H3.' : +hm[1] === 3 ? 'H3 done. You can put this phone down until the next step.'
           : +hm[1] < 6 ? 'Handheld test: you hold THIS phone the way you read a message, no aiming, until H6.' : 'H6 done. Put this phone back where it was.', 30000);
-        else line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + e.from + '.', 5000);
-        if (auto && !COPY.test(e.text)) send('(COPY) ' + e.text, true) }
+        else line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + whoIs(e.from) + '.', 5000);
+        if (auto && !COPY.test(words) && words !== SEEN_BEACON) send('(COPY) ' + words, true) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
   }
   testTick();
+  if (cur && cur.swap) return;
+  const bc = st.nearAgo !== undefined && st.nearAgo < 90 ? nearWho() + ' is near · seen ' + st.nearAgo + ' s ago.'
+    : st.beacon >= 0.5 ? 'Maybe ' + nearWho().replace('Someone', 'someone') + ': their beacon, faint.' : 'Nobody seen yet.';
+  $('bcText').textContent = bc;
   const sending = st.phase === 'sending', hearing = !!st.hearing;
-  $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (auto ? ' · AUTO-ANSWER ON' : '');
+  $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (st.beaconOn ? ' · BEACON' : '') + (auto ? ' · AUTO-ANSWER ON' : '');
   $('hold').style.display = hearing && !sending ? 'block' : 'none';
   const pct = st.progress >= 0 ? Math.round(st.progress * 100) : -1;
   $('holdPct').textContent = pct >= 0 ? pct + '%' : ''; $('holdBar').style.width = (pct >= 0 ? pct : 15) + '%';

@@ -58,12 +58,18 @@ class Talk(
         fun aim(score: Double) {}
         /** Message k was stopped by the person (to edit it): nothing more is sent for it. */
         fun stopped(k: Int) {}
+        /** How well the chat's "us" beacon matches what the camera sees (0-1), about every 1.4 s. */
+        fun beacon(score: Double) {}
     }
     @Volatile var events: Events? = null
     /** Also look for the other phone's Find pattern while listening (Field screen). */
     @Volatile var watchFind = false
     /** Blink the Find pattern for this many seconds as soon as possible (0 = no). */
     @Volatile var findSec = 0
+    /** Oct 29 (founder: "us" beacon): while idle, blink this chat's beacon twice (8.4 s) every BEACON_EVERY s. */
+    @Volatile var beaconOn = false
+    private val BEACON_EVERY = 30.0
+    private var lastBeacon = 0.0
     /** LightComm is on the screen (set by the app). Oct 24: off the screen, Android refuses the camera ("CAMERA_DISABLED ... from background"),
      *  and the reopen kept trying every 5 s for 25 min. Now it waits until the app is back on the screen. */
     @Volatile var onScreen = true
@@ -302,6 +308,9 @@ class Talk(
         log("# ready: listening, background ${f1(rx.background())}, brightest spots ${f1(rx.brightTop())}, ISO $iso, picture ${f1(exp * 1000)} ms\n")
         val findWave = BrightFormat.aimWave(15, 20.0)
         val findPeriod = BrightFormat.SHORT_SYNC.size / 15.0
+        // The beacon is looked for over 6 s (more than one 4.2 s round), every second scan (each look tries every start).
+        val beaconWave = BrightFormat.beaconWave(pass, 6.0)
+        var scans = 0
         scanner.scheduleWithFixedDelay({
             if (rx.readyAt > 0) {
                 val lines = try { rx.scan() } catch (e: Exception) { listOf("# scan problem: ${e.message}\n") }
@@ -309,6 +318,10 @@ class Talk(
                 if (watchFind && !rx.hearing) {
                     val sc = try { rx.aimScore(3.0, findWave, findPeriod).first } catch (_: Exception) { 0.0 }
                     events?.aim(sc)
+                }
+                if (!rx.hearing && scans++ % 2 == 0) {
+                    val sc = try { rx.aimScore(6.0, beaconWave, BrightFormat.BEACON_PERIOD).first } catch (_: Exception) { 0.0 }
+                    events?.beacon(sc)
                 }
             }
         }, 700, 700, TimeUnit.MILLISECONDS)
@@ -325,6 +338,13 @@ class Talk(
                 val sec = findSec; findSec = 0
                 log("# find: blinking the find pattern for $sec s\n")
                 closeCam(); sender.aim(15, sec.toDouble()); openCam()
+                quietSince = now(); continue
+            }
+            // The beacon only when nothing else is going on (no message waiting, nobody sending, nothing just heard).
+            if (beaconOn && next >= box.size && !rx.hearing && !rx.busy() && now() - quietSince >= 5 && now() - lastBeacon >= BEACON_EVERY) {
+                lastBeacon = now()
+                log("# beacon: blinking this chat's pattern twice\n")
+                closeCam(); sender.play(BrightFormat.beaconWave(pass, 2 * BrightFormat.BEACON_PERIOD - 0.01)); openCam()
                 quietSince = now(); continue
             }
             // Oct 15: the POCO's camera also went black in the middle of listening (01:46). Black for 3 s: fix it.

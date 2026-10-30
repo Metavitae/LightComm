@@ -399,6 +399,47 @@ object BrightFormat {
         return w
     }
 
+    /**
+     * "Us" beacon (Oct 29, founder): a 63-step on/off pattern made from the chat's key words, played at 15 per second
+     * (4.2 s). Only phones with the same key words know it, so the listening phone can say WHO is near without any text.
+     * 63 steps, not 31: on the computer, 31-step patterns of two different chats matched each other up to 0.68 (too
+     * close to the 0.7 "seen" line); 63-step ones at most 0.46, and at most 0.23 against Find. Of the first 64
+     * candidates, the one that matches itself shifted (and Find) the least is used: the same choice on both phones.
+     */
+    const val BEACON_SLOTS = 63
+    const val BEACON_RATE = 15
+    const val BEACON_SEEN = 0.7
+    private val beaconCache = HashMap<String, IntArray>()
+    fun beaconPattern(pass: String): IntArray = synchronized(beaconCache) { beaconCache.getOrPut(pass) { pickBeacon(pass) } }
+    private fun pickBeacon(pass: String): IntArray {
+        val n = BEACON_SLOTS
+        var best: IntArray? = null; var bestScore = 9.0
+        for (c in 0 until 64) {
+            val ks = MessageFormat.keystream("$pass/beacon/$c", 0, 8)
+            val p = IntArray(n) { (ks[it / 8].toInt() shr (7 - it % 8)) and 1 }
+            var run = 1; var longest = 1
+            for (i in 1 until n) { run = if (p[i] == p[i - 1]) run + 1 else 1; longest = maxOf(longest, run) }
+            if (p.sum() !in 28..35 || longest > 5) continue
+            val find = IntArray(n) { SHORT_SYNC_31[it % SHORT_SYNC_31.size] }
+            val score = maxOf((1 until n).maxOf { circCorr(p, p, it) }, (0 until n).maxOf { circCorr(p, find, it) })
+            if (score < bestScore) { bestScore = score; best = p }
+        }
+        return best ?: replyPattern(pass, 0, true)
+    }
+    /** Correlation of a with b turned by `shift` steps (both read as repeating). */
+    fun circCorr(a: IntArray, b: IntArray, shift: Int): Double {
+        val n = a.size; val ma = a.average(); val mb = b.average()
+        var s = 0.0; var da = 0.0; var db = 0.0
+        for (i in 0 until n) { val x = a[i] - ma; val y = b[(i + shift) % n] - mb; s += x * y; da += x * x; db += y * y }
+        return if (da == 0.0 || db == 0.0) 0.0 else s / Math.sqrt(da * db)
+    }
+    fun beaconWave(pass: String, seconds: Double): Wave {
+        val w = Wave(); val ts = 1.0 / BEACON_RATE; val p = beaconPattern(pass)
+        while (w.end < seconds) for (b in p) w.add(ts, if (b == 1) ts else 0.0)
+        return w
+    }
+    val BEACON_PERIOD = BEACON_SLOTS.toDouble() / BEACON_RATE
+
     /** Dark + sync: the same for every send (short = the short opening's sync). */
     fun syncWave(short: Boolean = false): Wave { val w = Wave(); repeat(DARK) { w.add(SLOT, 0.0) }; for (b in if (short) SHORT_SYNC else SYNC) w.add(SLOT, if (b == 1) SLOT else 0.0); return w }
 

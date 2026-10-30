@@ -50,7 +50,7 @@ class LightCommWidget : AppWidgetProvider() {
     companion object {
         /** How long news stays (founder Oct 27, option 3): routine news ("Sending", "Delivered") goes back to the banner after
          *  10 minutes; news that needs the person ("Not delivered", new messages) stays until the app is opened. */
-        private val ROUTINE = setOf("Sending as light", "Delivered")
+        private val ROUTINE = setOf("Sending as light", "Delivered", "Near")
         private const val FADE_MS = 10 * 60_000L
         private const val FADE = "com.metavitae.lightlab.WIDGET_FADE"
 
