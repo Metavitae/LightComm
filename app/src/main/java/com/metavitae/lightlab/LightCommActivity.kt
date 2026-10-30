@@ -38,6 +38,8 @@ class LightCommActivity : Activity() {
     @Volatile private var phase = "idle"
     /** Sounds for this phone's own events: "on", "vibrate" or "off" (stealth, battery). */
     @Volatile private var sounds = "on"
+    /** Oct 30 (founder: chats like WhatsApp/Telegram): a muted chat shows no "N new" on the widget (and the screen turns its sounds off). */
+    @Volatile private var muted = false
     /** One cue for this phone's own event: a tone, a short buzz, or nothing. */
     private fun cue(toneType: Int, ms: Int) {
         when (sounds) {
@@ -137,7 +139,7 @@ class LightCommActivity : Activity() {
                 push("heard", "ok" to r.ok, "dup" to dup, "text" to r.text, "from" to BrightFormat.phoneName(r.phoneTag),
                     "snr" to r.snr, "zones" to zones, "fine" to fine, "used" to JSONArray(r.blocks.filter { it < BrightListener.NB * BrightListener.NC }))
                 if (r.ok && !dup) { cue(ToneGenerator.TONE_PROP_ACK, 400)
-                    if (!visible) { unseen++; widget(BrightFormat.phoneName(r.phoneTag), "$unseen new · tap to open") } else widget("Listening", chatName) }
+                    if (!visible && !muted) { unseen++; widget(BrightFormat.phoneName(r.phoneTag), "$unseen new · tap to open") } else widget("Listening", chatName) }
             }
             override fun problem(text: String) { push("problem", "text" to text) }
             override fun beacon(score: Double) {
@@ -193,6 +195,11 @@ class LightCommActivity : Activity() {
         @JavascriptInterface fun find(sec: Int) { talk?.findSec = sec.coerceIn(5, 120) }
         @JavascriptInterface fun log(s: String) { file?.append("# screen: $s\n") }
         @JavascriptInterface fun setSounds(s: String) { sounds = s }
+        @JavascriptInterface fun mute(on: Boolean) { muted = on }
+        /** Copy a message's text (the page can't reach the clipboard by itself). */
+        @JavascriptInterface fun copy(text: String) = runOnUiThread {
+            try { getSystemService(android.content.ClipboardManager::class.java)?.setPrimaryClip(android.content.ClipData.newPlainText("LightComm", text)) } catch (_: Exception) {}
+        }
         /** One short vibration (the opening's wordmark when Sounds = Vibrate). */
         @JavascriptInterface fun buzz(ms: Int) {
             try { getSystemService(android.os.Vibrator::class.java)?.vibrate(android.os.VibrationEffect.createOneShot(ms.toLong().coerceIn(10, 300), 180)) } catch (_: Exception) {}

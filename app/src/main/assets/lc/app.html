@@ -86,6 +86,27 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 .step .st{font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.08em;color:var(--dim)}
 .step.done{border-color:var(--hi)}.step.done .st{color:var(--hi)}
 .seg button.sel{border-color:var(--ink);background:var(--ink);color:var(--on);font-weight:800}
+/* Oct 30 (founder: "like whatsapp or telegram"): long-press to select, a bar of actions, sheets that slide up from the bottom. */
+.card,.bub{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.card.sel{border-color:var(--hi);background:var(--panel2)}
+.in.sel .bub,.out.sel .bub{outline:2px solid var(--hi);outline-offset:3px}
+.in.hit .bub,.out.hit .bub{outline:2px dashed var(--hi);outline-offset:3px}
+.selbar{position:absolute;left:0;right:0;top:0;z-index:5;display:none;align-items:center;gap:5px;padding:18px 8px 12px 2px;background:var(--bg);border-bottom:1px solid var(--line)}
+.selbar.on{display:flex}
+#vChat > #msgSel{position:absolute;z-index:5}
+.selbar .n{flex:1;min-width:0;font-weight:800;font-size:22px;padding-left:2px;white-space:nowrap}
+.selbar .pill{flex:none;height:40px;padding:0 10px;font-size:11px;font-family:"JetBrains Mono",monospace;font-weight:500;letter-spacing:.06em}
+.selbar .pill.danger{border-color:var(--ink);color:var(--ink);font-weight:800}
+.sheetBg{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);display:none;align-items:flex-end}
+.sheetBg.on{display:flex}
+.sheet{width:100%;max-height:85%;overflow-y:auto;background:var(--panel);border-top:1px solid var(--line);border-radius:22px 22px 0 0;padding:16px 16px 24px;display:flex;flex-direction:column;gap:8px}
+.sheet .sh{font-weight:800;font-size:19px;padding:2px 6px 6px}
+.sheet .sp{font-size:15px;line-height:1.4;color:var(--dim);padding:0 6px 6px;white-space:pre-line}
+.sheet .sb{min-height:52px;border:1px solid var(--line);background:var(--panel2);border-radius:14px;text-align:left;padding:0 16px;font-size:17px;font-weight:500}
+.sheet .sb.danger{border-color:var(--ink);color:var(--ink);font-weight:800}
+.sheet .sb.cancel{text-align:center;background:transparent}
+.tag{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.08em;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1px 5px;margin-left:6px;vertical-align:3px}
+.rowbtn{display:flex;align-items:center;justify-content:space-between;width:100%;height:52px;padding:0 16px;border:1px dashed var(--line);border-radius:14px;background:transparent;font-family:"JetBrains Mono",monospace;font-size:12px;letter-spacing:.12em;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -94,19 +115,32 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 <section class="view" id="vChats">
   <div style="padding:26px 20px 0;display:flex;align-items:center;justify-content:space-between">
     <div style="font-weight:800;font-size:26px;letter-spacing:.02em"><span style="color:var(--hi)">Light</span>Comm</div>
+    <div style="display:flex;gap:8px;align-items:center">
+    <button class="icon" style="width:44px;height:44px" onclick="toggleSearch()" aria-label="Search chats and messages"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4.5 4.5"/></svg></button>
     <button class="pill mono" style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:8px" onclick="show('vSettings')" aria-label="Look and settings">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5Z"/></svg>
       <span id="nightLbl">NIGHT</span>
     </button>
+    </div>
+  </div>
+  <div id="searchRow" style="display:none;padding:12px 20px 0"><input class="field" id="chatSearch" style="margin:0" placeholder="Search chats and messages" oninput="drawChats()"></div>
+  <div class="selbar" id="chatSel">
+    <button class="icon" style="width:44px" onclick="endChatSel()" aria-label="Cancel selection"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l12 12M16 4 4 16"/></svg></button>
+    <span class="n" id="chatSelN"></span>
+    <button class="pill" id="chatSelPin" onclick="selPin()">PIN</button>
+    <button class="pill" id="chatSelArc" onclick="selArchive()">ARCHIVE</button>
+    <button class="pill danger" onclick="selDelete()">DELETE</button>
+    <button class="pill" onclick="selMore()" aria-label="More actions">MORE</button>
   </div>
   <div class="cap" style="padding:14px 20px 0;display:flex;align-items:center;gap:10px">
     <span style="width:8px;height:8px;border-radius:50%;background:var(--ink);box-shadow:0 0 8px var(--ink)"></span>
     <span>THIS STATION · <span id="me"></span></span><span style="margin-left:auto">NO NETWORK NEEDED</span>
   </div>
   <div class="cap" style="padding:30px 20px 10px;display:flex;align-items:center;gap:12px;letter-spacing:.14em">
+    <button class="icon" id="listBack" style="display:none;width:32px;height:28px;color:var(--dim)" onclick="setListMode('main')" aria-label="Back to all chats"><svg width="18" height="18" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 4 7 11l7 7"/></svg></button>
     <span id="chatsCount">CHATS</span><span style="flex:1;height:1px;background:var(--line)"></span>
   </div>
-  <div id="chatList" style="padding:0 20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto"></div>
+  <div id="chatList" style="padding:0 20px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;min-height:0"></div>
   <div style="margin:18px 20px 0;border:1px dashed var(--line);border-radius:16px;padding:16px">
     <div style="font-weight:800;font-size:17px">Each chat is its own circle.</div>
     <div style="font-size:15px;line-height:1.35;color:var(--dim);margin-top:6px">Only people with that chat's key words can send or read it.</div>
@@ -121,6 +155,9 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <button class="bigbtn solid" onclick="newChat(false)">New chat</button>
   </div>
 </section>
+
+<!-- Oct 30: action sheets (long-press menus, confirmations, rename) -->
+<div class="sheetBg" id="sheetBg" onclick="if (event.target === this) closeSheet()"><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
 
 <!-- ============ NEW / JOIN ============ -->
 <section class="view" id="vNew">
@@ -144,7 +181,15 @@ input[type=range]{width:100%;accent-color:var(--ink)}
       <div style="font-weight:800;font-size:19px" id="chatName"></div>
       <div class="mono" style="display:flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.08em;color:var(--hi)"><span id="dot" style="width:6px;height:6px;border-radius:50%;background:var(--hi)"></span><span id="chatState">STARTING</span></div>
     </div>
+    <button class="icon" style="width:40px" onclick="chatMenu(cur)" aria-label="Chat options"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true"><circle cx="11" cy="4.5" r="1.8"/><circle cx="11" cy="11" r="1.8"/><circle cx="11" cy="17.5" r="1.8"/></svg></button>
     <button class="icon" onclick="show('vSettings')" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="11" cy="11" r="3"/><path d="M11 2v3M11 17v3M2 11h3M17 11h3M4.6 4.6l2.1 2.1M15.3 15.3l2.1 2.1M4.6 17.4l2.1-2.1M15.3 6.7l2.1-2.1"/></svg></button>
+  </div>
+  <div class="selbar" id="msgSel">
+    <button class="icon" style="width:44px" onclick="endMsgSel()" aria-label="Cancel selection"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 4l12 12M16 4 4 16"/></svg></button>
+    <span class="n" id="msgSelN"></span>
+    <button class="pill" onclick="msgCopy()">COPY</button>
+    <button class="pill" id="msgSelInfo" onclick="msgInfo()">INFO</button>
+    <button class="pill danger" onclick="msgDelete()">DELETE</button>
   </div>
   <div id="lightnet">
     <!-- Lightnet character: placeholder mark until Chat designs the character -->
@@ -265,13 +310,15 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 
 <script>
 const $ = id => document.getElementById(id);
-const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, beacon(){}, share(){}, brightness(){}, maxVolume(){}, setSounds(){}, cameraBehind(){}, poll:()=>'{"events":[],"phase":"idle"}' };
+const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, find(){}, log(){}, beacon(){}, share(){}, brightness(){}, maxVolume(){}, setSounds(){}, mute(){}, copy(t){ try { navigator.clipboard.writeText(t) } catch (e) {} }, buzz(){}, cameraBehind(){}, poll:()=>'{"events":[],"phase":"idle"}' };
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
-                set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
+                set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} },
+                del(k){ try{ localStorage.removeItem(k) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
 // Oct 30 (founder: a web page as the practice partner at home): this chat is always first. Its partner is a page, which
 // can't answer, so it never sends copies back, never blinks the beacon, and has no TEST button.
-const PRACTICE = { id:'practice', name:'Practice at home', key:'LIGHTCOMM PRACTICE', practice:true };
+// Oct 30: it can be pinned, muted and cleared (kept from last time); it is never deleted, archived, renamed or blocked.
+const PRACTICE = Object.assign({ pinned:true }, chats.find(c => c.id === 'practice'), { id:'practice', name:'Practice at home', key:'LIGHTCOMM PRACTICE', practice:true });
 chats = [PRACTICE].concat(chats.filter(c => c.id !== 'practice'));
 let cur = null, msgs = [], auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
 const me = LC.phone();
@@ -286,6 +333,11 @@ function whoIs(from){ if (cur && cur.contact) return cur.name; if (cur && cur.pr
 function show(id){ const prev = document.querySelector('.view.on'); if (prev && prev.id !== id) history.push(prev.id);
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === id)); if (id === 'vChats') drawChats(); if (id === 'vSettings') drawSettings(); }
 function goBack(){ const v = document.querySelector('.view.on').id;
+  if ($('sheetBg').classList.contains('on')) { closeSheet(); return true }
+  if (v === 'vChats' && selChats) { endChatSel(); return true }
+  if (v === 'vChat' && selMsgs) { endMsgSel(); return true }
+  if (v === 'vChats' && listMode !== 'main') { setListMode('main'); return true }
+  if (v === 'vChats' && $('searchRow').style.display !== 'none') { toggleSearch(); return true }
   if (v === 'vChats') return false;
   if (v === 'vChat') { leaveChat(); return true }
   if (v === 'vSwap') { leaveSwap(); return true }
@@ -349,8 +401,9 @@ function swapGo(){ const n = store.get('lc.name', ''); if (!n) { drawSwap('Type 
 function swapCard(e){ const t = e.text.slice(1).split(SEP); if (t.length !== 2 || !t[0] || t[1].length < 6) return;
   const name = t[0], key = [swap.mine, t[1]].sort().join(' ');
   let c = chats.find(x => x.contact && x.name === name && x.phone === e.from);
-  if (c) c.key = key; else { c = { id:'p' + Date.now(), name, key, contact:true, phone:e.from }; chats.push(c) }
-  store.set('lc.chats', chats); swap.theirs = c; LC.log('swap: card from ' + e.from + ' saved');
+  if (c) { c.key = key; c.blocked = false; c.archived = false } else {   // Oct 30: swapping face to face again unblocks them (you chose to)
+ c = { id:'p' + Date.now(), name, key, contact:true, phone:e.from }; chats.push(c) }
+  saveChats(); swap.theirs = c; LC.log('swap: card from ' + e.from + ' saved');
   if (swap.state === 'idle') swapGo() }   // they started first: answer with ours
 function drawSwap(note){ if (!swap) return; const m = $('swapMineSt'), tn = $('swapTheirName'), ts = $('swapTheirSt');
   m.textContent = { idle:'NOT SENT YET', sending:'SENDING AS LIGHT…', done:'DONE · THEY HAVE IT', failed:'NOT DELIVERED · TAP SWAP AGAIN' }[swap.state];
@@ -375,15 +428,111 @@ const SEEN_BEACON = '(SEEN BEACON)';
 const nearWho = () => cur ? (cur.contact ? cur.name : 'Someone from ' + cur.name) : 'Someone';
 
 // ---------- chats ----------
-function drawChats(){ const l = $('chatList'); l.innerHTML = ''; $('chatsCount').textContent = 'CHATS · ' + chats.length;
-  chats.forEach(c => { const last = store.get('lc.msgs.' + c.id, []).slice(-1)[0];
-    const b = document.createElement('button'); b.className = 'card'; b.onclick = () => openChat(c);
+// Oct 30 (founder: "like whatsapp or telegram"): pinned first, muted, archived and blocked lists, search through names
+// and messages, and long-press to select several chats. A chat only listens while it is open, so a closed chat never
+// gets new messages: there are no unread counts on the list (the widget shows "N new" while the app is away).
+let listMode = 'main', selChats = null, shownChats = [];
+function saveChats(){ store.set('lc.chats', chats) }
+const listOf = mode => chats.filter(c => mode === 'blocked' ? c.blocked : mode === 'archived' ? c.archived && !c.blocked : !c.archived && !c.blocked);
+function setListMode(m){ listMode = m; endChatSel(); drawChats() }
+function toggleSearch(){ const r = $('searchRow'), on = r.style.display === 'none'; r.style.display = on ? 'block' : 'none';
+  if (on) $('chatSearch').focus(); else $('chatSearch').value = ''; drawChats() }
+function drawChats(){ const l = $('chatList'); l.innerHTML = '';
+  const q = $('chatSearch').value.trim().toUpperCase(), hits = {};
+  let list = listOf(listMode);
+  if (q) list = chats.filter(c => !c.blocked).filter(c => { if (c.name.toUpperCase().includes(q)) return true;
+    const m = store.get('lc.msgs.' + c.id, []).slice().reverse().find(x => (x.text || '').toUpperCase().includes(q)); if (m) { hits[c.id] = m; return true } return false });
+  list.sort((a, b) => (!!b.pinned) - (!!a.pinned)); shownChats = list;
+  $('chatsCount').textContent = q ? 'FOUND · ' + list.length : (listMode === 'main' ? 'CHATS' : listMode.toUpperCase()) + ' · ' + list.length;
+  $('listBack').style.display = listMode === 'main' || q ? 'none' : 'flex';
+  list.forEach(c => { const last = hits[c.id] || store.get('lc.msgs.' + c.id, []).slice(-1)[0];
+    const b = document.createElement('button'); b.className = 'card' + (selChats && selChats.has(c) ? ' sel' : '');
     b.innerHTML = '<svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="16" stroke="var(--line)" stroke-width="1.4"/><circle cx="24" cy="8" r="3.2" fill="var(--ink)"/><circle cx="24" cy="40" r="3.2" fill="var(--dim)"/><circle cx="24" cy="24" r="2" fill="var(--hi)"/></svg>' +
-      '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-weight:800;font-size:19px"></span><span class="mono" style="font-size:12px;color:var(--dim)"></span></div>' +
+      '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span style="font-weight:800;font-size:19px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><span class="mono" style="font-size:12px;color:var(--dim);flex:none"></span></div>' +
       '<div class="mono" style="font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div></div>';
     const s = b.querySelectorAll('span'); s[0].textContent = c.name; s[1].textContent = last ? last.time : '';
+    [c.pinned && 'PINNED', c.muted && 'MUTED', c.contact && 'CONTACT'].filter(Boolean).forEach(t => { const g = document.createElement('span'); g.className = 'tag'; g.textContent = t; s[0].after(g) });
     b.querySelectorAll('div')[2].textContent = last ? ((last.dir === 'in' ? last.from + ': ' : 'You: ') + last.text) : 'No messages yet';
-    l.appendChild(b) }) }
+    longPress(b, () => { if (!selChats) startChatSel(c); else toggleChatSel(c) },
+      () => { if (selChats) toggleChatSel(c); else if (c.blocked) blockedMenu(c); else openChat(c, hits[c.id]) });
+    l.appendChild(b) });
+  if (!list.length) { const e = document.createElement('div'); e.className = 'cap'; e.style.cssText = 'padding:14px 4px;font-size:13px';
+    e.textContent = q ? 'Nothing found.' : listMode === 'main' ? 'No chats yet.' : 'Nothing here.'; l.appendChild(e) }
+  if (listMode === 'main' && !q) ['archived', 'blocked'].forEach(m => { const n = listOf(m).length; if (!n) return;
+    const r = document.createElement('button'); r.className = 'rowbtn'; r.innerHTML = '<span></span><span></span>';
+    r.firstChild.textContent = m.toUpperCase(); r.lastChild.textContent = n; r.onclick = () => setListMode(m); l.appendChild(r) });
+  drawChatSel() }
+/** Long press (half a second, finger still) or a tap. */
+function longPress(el, onLong, onTap){ let t = null, fired = false, x0 = 0, y0 = 0;
+  const cancel = () => { if (t) { clearTimeout(t); t = null } };
+  el.addEventListener('pointerdown', e => { fired = false; x0 = e.clientX; y0 = e.clientY; cancel();
+    t = setTimeout(() => { t = null; fired = true; if (store.get('lc.sounds', 'on') !== 'off') LC.buzz(25); onLong() }, 500) });
+  el.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 12) cancel() });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(k => el.addEventListener(k, cancel));
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  el.onclick = e => { if (fired) { fired = false; return } onTap(e) } }
+function startChatSel(c){ selChats = new Set([c]); drawChats() }
+function toggleChatSel(c){ selChats.has(c) ? selChats.delete(c) : selChats.add(c); if (!selChats.size) selChats = null; drawChats() }
+function endChatSel(){ if (!selChats) return; selChats = null; drawChats() }
+function drawChatSel(){ $('chatSel').classList.toggle('on', !!selChats); if (!selChats) return; const a = [...selChats];
+  $('chatSelN').textContent = a.length;
+  $('chatSelPin').textContent = a.every(c => c.pinned) ? 'UNPIN' : 'PIN';
+  $('chatSelArc').textContent = listMode === 'archived' ? 'UNARCHIVE' : 'ARCHIVE';
+  $('chatSelArc').style.display = listMode === 'blocked' || a.every(c => c.practice) ? 'none' : '' }
+// What each action can't touch: the practice chat stays (never archived, deleted or renamed).
+const fixed = c => c.practice;
+function selPin(){ const a = [...selChats], on = !a.every(c => c.pinned); a.forEach(c => c.pinned = on); saveChats(); endChatSel() }
+function selArchive(){ const a = [...selChats].filter(c => !fixed(c)), on = listMode !== 'archived';
+  a.forEach(c => { c.archived = on; if (on) c.pinned = false }); saveChats(); endChatSel() }
+function selDelete(){ const a = [...selChats].filter(c => !fixed(c));
+  if (!a.length) { sheet('The practice chat stays', [], 'It is always here for practising at home. You can clear its messages instead.'); return }
+  confirmSheet(a.length === 1 ? 'Delete "' + a[0].name + '"?' : 'Delete ' + a.length + ' chats?',
+    'Their messages are erased from this phone. To talk in a deleted chat again you need its key words.' + (a.length < selChats.size ? '\nThe practice chat stays.' : ''),
+    'Delete', () => deleteChats(a)) }
+function deleteChats(a){ a.forEach(c => { store.del('lc.msgs.' + c.id); const i = chats.indexOf(c); if (i >= 0) chats.splice(i, 1) }); saveChats(); selChats = null; drawChats() }
+function clearChats(a){ a.forEach(c => { store.set('lc.msgs.' + c.id, []); if (cur === c) { msgs = []; drawMsgs() } }) }
+function selMore(){ const a = [...selChats], one = a.length === 1 ? a[0] : null, muted = a.every(c => c.muted);
+  sheet(one ? one.name : a.length + ' chats', [
+    { label: muted ? 'Unmute' : 'Mute', fn: () => { a.forEach(c => c.muted = !muted); saveChats(); endChatSel() } },
+    one && !fixed(one) && { label: 'Rename', fn: () => renameChat(one, endChatSel) },
+    { label: 'Clear messages', danger: true, fn: () => confirmSheet('Clear the messages?', 'The chat stays; its messages are erased from this phone.', 'Clear', () => { clearChats(a); endChatSel() }) },
+    one && one.contact && !one.blocked && { label: 'Block ' + one.name, danger: true, fn: () => blockChat(one, endChatSel) },
+    listMode === 'blocked' && { label: 'Unblock', fn: () => { a.forEach(c => c.blocked = false); saveChats(); endChatSel() } },
+    { label: 'Select all', fn: () => { selChats = new Set(shownChats); drawChats() } },
+  ]) }
+function renameChat(c, then){ askSheet('Rename', c.name, 'Save', v => { if (v) { c.name = v; saveChats(); if (cur === c) $('chatName').textContent = v } if (then) then(); else drawChats() }) }
+// Blocking is for face-to-face contacts: their chat has its own private key words, so this phone simply never listens on it
+// (they can't reach you, and nothing is sent back). In a shared chat a sender is only a phone model, so "block" would be a guess.
+function blockChat(c, then){ confirmSheet('Block ' + c.name + '?', 'This phone stops listening on your private chat with ' + c.name + ', so nothing they send arrives and nothing is answered. They are not told. You can unblock any time (chat list, Blocked).',
+  'Block', () => { c.blocked = true; c.pinned = false; saveChats(); if (cur === c) leaveChat(); if (then) then(); else drawChats() }) }
+function blockedMenu(c){ sheet(c.name, [{ label: 'Unblock', fn: () => { c.blocked = false; saveChats(); drawChats() } },
+  { label: 'Delete chat', danger: true, fn: () => confirmSheet('Delete "' + c.name + '"?', 'Its messages are erased from this phone.', 'Delete', () => deleteChats([c])) }], 'Blocked: this phone never listens on this chat.') }
+/** The ⋮ menu inside a chat. */
+function chatMenu(c){ if (!c || c.swap) return;
+  sheet(c.name, [
+    { label: c.muted ? 'Unmute' : 'Mute', fn: () => { c.muted = !c.muted; saveChats(); applyMute(); line(c.muted ? 'Muted: no sounds and no "new" on the widget for this chat.' : 'Unmuted.', 5000) } },
+    { label: c.pinned ? 'Unpin' : 'Pin to the top', fn: () => { c.pinned = !c.pinned; saveChats() } },
+    !fixed(c) && { label: 'Rename', fn: () => renameChat(c) },
+    { label: 'Select messages', fn: () => { selMsgs = new Set(); drawMsgs(); line('Tap the messages to select them.', 6000) } },
+    { label: 'Clear messages', danger: true, fn: () => confirmSheet('Clear the messages?', 'The chat stays; its messages are erased from this phone.', 'Clear', () => clearChats([c])) },
+    c.contact && { label: 'Block ' + c.name, danger: true, fn: () => blockChat(c) },
+    !fixed(c) && { label: 'Delete chat', danger: true, fn: () => confirmSheet('Delete "' + c.name + '"?', 'Its messages are erased from this phone. To talk in it again you need its key words.', 'Delete', () => { leaveChat(); deleteChats([c]) }) },
+  ]) }
+function applyMute(){ const m = !!(cur && cur.muted); LC.setSounds(m ? 'off' : store.get('lc.sounds', 'on')); LC.mute(m) }
+// ---------- sheets ----------
+function sheet(title, items, text, extra){ const s = $('sheet'); s.innerHTML = '';
+  const h = document.createElement('div'); h.className = 'sh'; h.textContent = title; s.appendChild(h);
+  if (text) { const p = document.createElement('div'); p.className = 'sp'; p.textContent = text; s.appendChild(p) }
+  if (extra) s.appendChild(extra);
+  items.filter(Boolean).forEach(it => { const b = document.createElement('button'); b.className = 'sb' + (it.danger ? ' danger' : ''); b.textContent = it.label;
+    b.onclick = () => { closeSheet(); it.fn() }; s.appendChild(b) });
+  const c = document.createElement('button'); c.className = 'sb cancel'; c.textContent = items.filter(Boolean).length ? 'Cancel' : 'OK'; c.onclick = closeSheet; s.appendChild(c);
+  $('sheetBg').classList.add('on') }
+function closeSheet(){ $('sheetBg').classList.remove('on') }
+function confirmSheet(title, text, label, fn){ sheet(title, [{ label, danger: true, fn }], text) }
+function askSheet(title, value, label, fn){ const f = document.createElement('input'); f.className = 'field'; f.style.margin = '0 0 4px'; f.value = value; f.maxLength = 40;
+  f.onkeydown = e => { if (e.key === 'Enter') { closeSheet(); fn(f.value.trim()) } };
+  sheet(title, [{ label, fn: () => fn(f.value.trim()) }], '', f); setTimeout(() => f.focus(), 60) }
 let joining = false;
 function newChat(join){ joining = join; $('newTitle').textContent = join ? 'Join a chat' : 'New chat'; $('newName').value = ''; $('newKey').value = '';
   $('newHint').textContent = join ? 'Type the key words the others gave you, exactly.' : 'Tell the others these words in person. Invitations by light come later.'; show('vNew') }
@@ -393,11 +542,15 @@ function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKe
 
 // ---------- chat ----------
 function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
-function openChat(c){ cur = c; msgs = store.get('lc.msgs.' + c.id, []);
+function openChat(c, hit){ cur = c; msgs = store.get('lc.msgs.' + c.id, []); selMsgs = null; selChats = null; applyMute();
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
   $('chatName').textContent = c.name; $('testBtn').parentNode.style.display = c.practice ? 'none' : '';
-  drawMsgs(); line(c.practice ? 'Open the LightComm practice page on a computer or TV and point this phone\'s back camera at its square.' : 'Waking the camera…', c.practice ? 20000 : undefined); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); toEnd(false); testLabel() }
-function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
+  drawMsgs(); line(c.practice ? 'Open the LightComm practice page on a computer or TV and point this phone\'s back camera at its square.' : 'Waking the camera…', c.practice ? 20000 : undefined);
+  if (hit) setTimeout(() => showHit(hit), 50); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); toEnd(false); testLabel() }
+function leaveChat(){ LC.close(); save(); cur = null; selMsgs = null; applyMute(); history = []; show('vChats') }
+/** From a search: the found message, centred and outlined for a moment. */
+function showHit(hit){ const i = msgs.findIndex(m => m.text === hit.text && m.time === hit.time && m.dir === hit.dir); const el = $('msgs').children[i]; if (!el) return;
+  el.scrollIntoView({ block:'center' }); el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 2500) }
 function save(){ if (cur && !cur.swap) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
 // The list stays where the person scrolled it (it used to jump to the bottom on every status change). It follows the
 // newest message only when already at the bottom, or when this phone just sent something.
@@ -414,13 +567,31 @@ function drawMsgs(){ const box = $('msgs'), stay = !followEnd && !atEnd(box), ke
     if (m.dir === 'in') { const w = document.createElement('div'); w.className = 'who'; w.textContent = (m.from || '').toUpperCase() + ' · ' + m.time; d.appendChild(w) }
     const b = document.createElement('div'); b.className = 'bub'; b.textContent = m.text; d.appendChild(b);
     const t = document.createElement('div'); t.className = 'meta'; t.textContent = m.meta || ''; d.appendChild(t);
-    if (m.dir === 'out' && m.state === 'failed') d.onclick = () => { m.state = 'pending'; enqueue(m) };
+    if (selMsgs && selMsgs.has(m)) d.classList.add('sel');
+    longPress(b, () => { if (!selMsgs) selMsgs = new Set(); toggleMsgSel(m) },
+      () => { if (selMsgs) toggleMsgSel(m); else if (m.dir === 'out' && m.state === 'failed') { m.state = 'pending'; enqueue(m) } });
     // Founder Oct 14: a message being sent (or waiting) can be stopped and edited.
     if (m.dir === 'out' && m.state === 'pending' && m.k) { const s = document.createElement('button'); s.className = 'stopbtn';
       s.textContent = 'STOP · EDIT'; s.setAttribute('aria-label', 'Stop sending and edit'); s.onclick = ev => { ev.stopPropagation(); stopEdit(m) }; d.appendChild(s) }
     box.appendChild(d) });
-  if (stay) box.scrollTop = keep; else { box.scrollTop = box.scrollHeight; unseen = 0 }
-  endCheck(); save() }
+  if (stay || selMsgs) box.scrollTop = keep; else { box.scrollTop = box.scrollHeight; unseen = 0 }
+  endCheck(); drawMsgSel(); save() }
+// Oct 30: long-press a message to select it (then tap others); copy, info, delete for me. Light already sent can't be called back.
+let selMsgs = null;
+function toggleMsgSel(m){ selMsgs.has(m) ? selMsgs.delete(m) : selMsgs.add(m); drawMsgs() }
+function endMsgSel(){ selMsgs = null; drawMsgs() }
+function drawMsgSel(){ $('msgSel').classList.toggle('on', !!selMsgs); if (!selMsgs) return;
+  $('msgSelN').textContent = selMsgs.size || ''; $('msgSelInfo').style.display = selMsgs.size === 1 ? '' : 'none' }
+const picked = () => msgs.filter(m => selMsgs && selMsgs.has(m));
+function msgCopy(){ const a = picked(); if (!a.length) return;
+  LC.copy(a.length === 1 ? a[0].text : a.map(m => (m.dir === 'in' ? m.from : 'You') + ' (' + m.time + '): ' + m.text).join('\n'));
+  endMsgSel(); line(a.length === 1 ? 'Copied.' : a.length + ' messages copied.', 4000) }
+function msgInfo(){ const m = picked()[0]; if (!m) return;
+  sheet(m.dir === 'in' ? 'Received' : 'Sent', [], [m.dir === 'in' ? 'From: ' + (m.from || '?') : 'From: you', 'Time: ' + m.time,
+    m.meta || '', m.tries ? 'Tries: ' + m.tries : '', m.sec ? 'Seconds of light: ' + Math.round(m.sec) : '', m.parts && m.parts.length > 1 ? 'Parts: ' + m.parts.length : ''].filter(Boolean).join('\n')) }
+function msgDelete(){ const a = picked(); if (!a.length) return;
+  confirmSheet(a.length === 1 ? 'Delete this message?' : 'Delete ' + a.length + ' messages?', 'Deleted from this phone only. Light that was already sent can\'t be called back.' + (a.some(m => m.state === 'pending') ? '\nA message still being sent stops now.' : ''),
+    'Delete', () => { a.forEach(m => { if (m.state === 'pending') (m.parts || []).forEach(p => { if (!p.ok) LC.stop(p.k) }); const i = msgs.indexOf(m); if (i >= 0) msgs.splice(i, 1) }); selMsgs = null; drawnLen = msgs.length; drawMsgs() }) }
 // Long messages (founder Oct 15: "a very short amount of words"): up to 400 letters, sent as parts that each fit
 // one send (80 bytes) and each get their own "got it". Each part starts with "~" + group letter + "part/parts ",
 // e.g. "~c2/4 ". A miss resends only the parts not delivered; the other phone joins the parts into one message.
