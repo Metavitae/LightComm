@@ -121,7 +121,7 @@ class LightCommActivity : Activity() {
         val opts = Talk.Opts(emptyList(), 5, true, true, 2.0, 12.0, 4, 2.0, 0.0, 0, emptyList(), "lightcomm", "lightcomm")
         val t = Talk(this, preview, cams[0].first, MessageFormat.norm(key), opts, f) { }
         t.watchFind = true
-        t.beaconOn = beaconWanted && key != SWAP_KEY   // face to face: only the two cards, no beacon blinking in between
+        t.beaconOn = beaconWanted && key != SWAP_KEY && key != PRACTICE_KEY   // face to face: only the two cards; practice: the partner is a page
         t.events = object : Talk.Events {
             override fun sending(k: Int, text: String, attempt: Int, mode: BrightFormat.Mode, short: Boolean) {
                 widget("Sending as light", chatName); phase = "sending"; push("sending", "k" to k, "attempt" to attempt, "perSec" to mode.perSec, "short" to short)
@@ -167,12 +167,14 @@ class LightCommActivity : Activity() {
     }
 
     private val SWAP_KEY = "LIGHTCOMM FACE TO FACE"
+    /** Oct 30: the "Practice at home" chat (app.html PRACTICE); its partner is the practice page, which can't see a beacon. */
+    private val PRACTICE_KEY = "LIGHTCOMM PRACTICE"
     /** "Us" beacon switched on by the person (kept across chats and restarts of the talk). */
     @Volatile private var beaconWanted = false
 
     /** What the page can call. Strings in, JSON strings out. */
     inner class Bridge {
-        @JavascriptInterface fun beacon(on: Boolean) { beaconWanted = on; talk?.beaconOn = on && talkKey != SWAP_KEY; file?.append("# screen: beacon ${if (on) "on" else "off"}\n") }
+        @JavascriptInterface fun beacon(on: Boolean) { beaconWanted = on; talk?.beaconOn = on && talkKey != SWAP_KEY && talkKey != PRACTICE_KEY; file?.append("# screen: beacon ${if (on) "on" else "off"}\n") }
         /** Android's share sheet (WhatsApp, SMS, email...) with this text. */
         @JavascriptInterface fun share(text: String) = runOnUiThread {
             try { startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")

@@ -269,6 +269,10 @@ const LC = window.LC || { phone:()=>"browser", open(){}, close(){}, send(){}, fi
 const store = { get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) }catch(e){ return d } },
                 set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} } };
 let chats = store.get('lc.chats', [{ id:'work', name:'Work test', key:'LIGHTCOMM' }]);
+// Oct 30 (founder: a web page as the practice partner at home): this chat is always first. Its partner is a page, which
+// can't answer, so it never sends copies back, never blinks the beacon, and has no TEST button.
+const PRACTICE = { id:'practice', name:'Practice at home', key:'LIGHTCOMM PRACTICE', practice:true };
+chats = [PRACTICE].concat(chats.filter(c => c.id !== 'practice'));
 let cur = null, msgs = [], auto = store.get('lc.auto', false), lastHeard = null, lastNote = null, history = [];
 const me = LC.phone();
 function drawMe(){ const n = store.get('lc.name', ''); $('me').textContent = (n ? n + ' · ' : '') + me.toUpperCase(); $('me2').textContent = $('me').textContent } drawMe();
@@ -276,7 +280,7 @@ function drawMe(){ const n = store.get('lc.name', ''); $('me').textContent = (n 
 function setName(v){ v = v.replace(/[\u001c-\u001f]/g, '').slice(0, 16); store.set('lc.name', v.trim()); drawMe();
   if ($('myName').value !== v) $('myName').value = v; if ($('swapName').value !== v) $('swapName').value = v }
 /** Who sent it: a contact's name when we know that phone, else the phone's model (from its header tag). */
-function whoIs(from){ if (cur && cur.contact) return cur.name;
+function whoIs(from){ if (cur && cur.contact) return cur.name; if (cur && cur.practice) return 'Practice page';
   const c = chats.find(x => x.contact && x.phone === from); return c ? c.name : from }
 
 function show(id){ const prev = document.querySelector('.view.on'); if (prev && prev.id !== id) history.push(prev.id);
@@ -391,7 +395,8 @@ function saveChat(){ const n = $('newName').value.trim() || 'Chat', k = $('newKe
 function now(){ const d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) }
 function openChat(c){ cur = c; msgs = store.get('lc.msgs.' + c.id, []);
   msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { m.state = 'failed'; m.meta = 'NOT SENT · TAP TO SEND AGAIN' } });
-  $('chatName').textContent = c.name; drawMsgs(); line('Waking the camera…'); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); toEnd(false); testLabel() }
+  $('chatName').textContent = c.name; $('testBtn').parentNode.style.display = c.practice ? 'none' : '';
+  drawMsgs(); line(c.practice ? 'Open the LightComm practice page on a computer or TV and point this phone\'s back camera at its square.' : 'Waking the camera…', c.practice ? 20000 : undefined); LC.open(c.key); if (LC.chatName) LC.chatName(c.name); show('vChat'); toEnd(false); testLabel() }
 function leaveChat(){ LC.close(); save(); cur = null; history = []; show('vChats') }
 function save(){ if (cur && !cur.swap) store.set('lc.msgs.' + cur.id, msgs.slice(-200)) }
 // The list stays where the person scrolled it (it used to jump to the bottom on every status change). It follows the
@@ -556,7 +561,7 @@ function tick(){
   for (const e of st.events) {
     if (cur && cur.swap) { if (swap) swapEvent(e); continue }
     if (e.type === 'near') { line(nearWho() + ' is near: their beacon is in sight.', 8000);
-      if (auto) send(SEEN_BEACON, true) }   // test plan: the beacon phone waits for this
+      if (auto && !cur.practice) send(SEEN_BEACON, true) }   // test plan: the beacon phone waits for this
     else if (e.type === 'sending') { const [m, , j] = bySession(e.k); if (m) { m.meta = 'SENDING AS LIGHT' + (m.parts.length > 1 ? ' · PART ' + j + ' OF ' + m.parts.length : '') + (e.attempt > 1 ? ' · TRY ' + e.attempt : '') + ' · ' + e.perSec + '/S'; drawMsgs() }
       line(e.attempt > 1 ? 'No answer yet. Sending again' + (e.perSec < 30 ? ', slower.' : '.') : 'Sending as light. Keep the phone still.') }
     else if (e.type === 'stopped') { delete stoppedMsgs[e.k] }
@@ -586,14 +591,14 @@ function tick(){
         m.text = Array.from({ length:n }, (_, i) => m.got[i + 1] !== undefined ? m.got[i + 1] : ' … ').join('');
         m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
         line(m.whole ? 'Message from ' + m.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + m.from + '. The rest is coming.', 5000);
-        if (m.whole && auto && !COPY.test(m.text)) send('(COPY) ' + m.text, true) }
+        if (m.whole && auto && !cur.practice && !COPY.test(m.text)) send('(COPY) ' + m.text, true) }
       else if (e.ok && !e.dup) { const words = readWire(e.text);
         msgs.push({ dir:'in', from:whoIs(e.from), text:words, time:now(), meta:'RECEIVED · ' + (words !== e.text ? 'ONE CODE · ' : '') + sig }); drawMsgs();
         const hm = /^H([1-6]) HELD/.exec(e.text);   // Oct 24: the handheld steps were shown only on the POCO; the phone in the hand says it too
         if (hm) line(+hm[1] < 3 ? 'Handheld test: you hold THIS phone. Keep its back camera pointed at the other phone until H3.' : +hm[1] === 3 ? 'H3 done. You can put this phone down until the next step.'
           : +hm[1] < 6 ? 'Handheld test: you hold THIS phone the way you read a message, no aiming, until H6.' : 'H6 done. Put this phone back where it was.', 30000);
         else line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + whoIs(e.from) + '.', 5000);
-        if (auto && !COPY.test(words) && words !== SEEN_BEACON) send('(COPY) ' + words, true) }
+        if (auto && !cur.practice && !COPY.test(words) && words !== SEEN_BEACON) send('(COPY) ' + words, true) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
   }
@@ -603,7 +608,7 @@ function tick(){
     : st.beacon >= 0.5 ? 'Maybe ' + nearWho().replace('Someone', 'someone') + ': their beacon, faint.' : 'Nobody seen yet.';
   $('bcText').textContent = bc;
   const sending = st.phase === 'sending', hearing = !!st.hearing;
-  $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (st.beaconOn ? ' · BEACON' : '') + (auto ? ' · AUTO-ANSWER ON' : '');
+  $('chatState').textContent = (st.phase === 'starting' ? 'STARTING' : sending ? 'SENDING AS LIGHT' : hearing ? 'HOLD · SOMEONE IS SENDING' : st.phase === 'listening' ? 'LISTENING' : 'IDLE') + (st.beaconOn ? ' · BEACON' : '') + (auto && !(cur && cur.practice) ? ' · AUTO-ANSWER ON' : '');
   $('hold').style.display = hearing && !sending ? 'block' : 'none';
   const pct = st.progress >= 0 ? Math.round(st.progress * 100) : -1;
   $('holdPct').textContent = pct >= 0 ? pct + '%' : ''; $('holdBar').style.width = (pct >= 0 ? pct : 15) + '%';
@@ -623,6 +628,7 @@ function tick(){
     else if (f >= 0.55) $('lnText').textContent = 'I see their Find light, faintly. Try moving a little.';
     else if (st.waiting > 0) $('lnText').textContent = 'Waiting for a clear line to send.';
     else if (st.phase === 'listening' && st.bg !== undefined && st.bg < 3 && st.top < 20) $('lnText').textContent = 'This phone sees almost nothing. Stand it up, or turn its back toward the room.';
+    else if (st.phase === 'listening' && cur && cur.practice) $('lnText').textContent = 'Point the back camera at the practice page\'s square. Messages appear here.';
     else if (st.phase === 'listening' && auto) $('lnText').textContent = 'Auto-answer is on. Leave this phone here: it answers every message by itself.';
     else if (st.phase === 'listening') $('lnText').textContent = 'Ready. Tap OK or write to send. Their light off a wall, floor or ceiling counts.';
   }

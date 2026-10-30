@@ -12,7 +12,7 @@ select,button { font:inherit; background:#111; color:var(--fg); border:1px solid
 </style></head><body>
 <div id="light"></div>
 <div id="ui">
-  <div id="line">Open the "Work test" chat on the phone and point its back camera at this square.</div>
+  <div id="line">Open "Practice at home" in LightComm and point the phone's back camera at this square.</div>
   <select id="pick"></select>
   <button id="go">START IN 10 S</button>
 </div>
@@ -23,12 +23,16 @@ P.forEach((p, i) => $('pick').add(new Option(p.text + ' (' + Math.round(p.end) +
 $('pick').add(new Option('All, one after another', -1));
 let run = null, timer = null;
 function line(t){ $('line').textContent = t }
+// Oct 30 (first read on the POCO): the phone's camera had settled on a dark screen and the white square overloaded it.
+// So the square glows steadily before every message: the camera follows the room light within a few seconds.
+const GLOW = 8;
+function glow(on){ light.style.background = on ? '#fff' : '#000' }
 function stop(){ run = null; clearInterval(timer); timer = null; light.style.background = '#000'; $('ui').className = ''; $('go').textContent = 'START IN 10 S' }
 $('go').onclick = () => {
   if (run || timer) { stop(); line('Stopped.'); return }
   const i = +$('pick').value, list = i < 0 ? P.map((_, k) => k) : [i];
-  let n = 10; $('go').textContent = 'STOP'; line('Starting in ' + n + ' s');
-  timer = setInterval(() => { if (--n > 0) { line('Starting in ' + n + ' s'); return }
+  let n = 10; $('go').textContent = 'STOP'; glow(true); line('Hold the phone still. Starting in ' + n + ' s');
+  timer = setInterval(() => { if (--n > 0) { line('Hold the phone still. Starting in ' + n + ' s'); return }
     clearInterval(timer); timer = null; $('ui').className = 'running'; play(list, 0) }, 1000) };
 function play(list, k){
   if (k >= list.length) { stop(); line('Done. Did the phone show the message?'); return }
@@ -40,7 +44,9 @@ function play(list, k){
     while (j < p.sw.length && p.sw[j][0] <= t) j++;
     light.style.background = j > 0 && p.sw[j - 1][1] ? '#fff' : '#000';
     if (t < p.end + 0.5) requestAnimationFrame(frame);
-    else { light.style.background = '#000'; setTimeout(() => play(list, k + 1), 20000) }   // 20 s for the phone to answer before the next one
+    else { light.style.background = '#000';   // 20 s for the phone to answer, then the glow, then the next one
+      if (k + 1 < list.length) setTimeout(() => { if (run === p) { glow(true); line('Next message in ' + GLOW + ' s'); setTimeout(() => { if (run === p) play(list, k + 1) }, GLOW * 1000) } }, 20000);
+      else setTimeout(() => { if (run === p) play(list, k + 1) }, 3000) }
   })(performance.now());
 }
 </script></body></html>
