@@ -695,7 +695,8 @@ function testTap(){ const L = myTests(); let i = testPos(L);
     if (!cur) { testLabel(); return }   // left the chat meanwhile: not started
     tRun = true; tPause = false; tLog('run started at ' + L[i][0]); startTest(); testLabel() }, 1000) }
 // Only copies that came after this test sent (the same text from an earlier run doesn't count).
-const copyOf = (text, m0) => msgs.slice(Math.max(0, msgs.indexOf(m0))).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
+// Nov 2: the sent message gone (stopped by the person) = no copy counts (indexOf -1 used to search the whole chat: false ok).
+const copyOf = (text, m0) => msgs.indexOf(m0) >= 0 && msgs.slice(msgs.indexOf(m0)).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
 function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.test.i', 0)];
   tStep = { code, kind, t0: Date.now(), phase: 0 };
   if (kind === 'hand') { tStep.text = text; tStep.wait = true; line(ask, 600000); tLog(code + ' waiting for the person (handheld)'); return }
@@ -705,13 +706,16 @@ function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.te
   if (kind === 'preset') { tStep.text = presetText(text); send(tStep.text, false, presetWire(text)); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started (one code)'); return }
   tStep.text = kind === 'stop' ? code + ' STOP ME' : kind === 'both' ? code + ' FIRST' : text;
   send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started') }
+// Nov 2: a round paused one night and finished the next mixed both nights in one SUMMARY. Results from before today say their day.
+const resText = r => { if (!r) return '-'; const [v, t] = String(r).split(' @'); if (!t) return v + ' (earlier day)';
+  const d = new Date(+t), now = new Date(); return d.toDateString() === now.toDateString() ? v : v + ' (' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ')' };
 function endTest(result){ const L = myTests(), sec = Math.round((Date.now() - tStep.t0) / 1000); tLog(tStep.code + ' ' + result + ' after ' + sec + ' s');
   if (tStep.kind === 'beacon') LC.beacon(tStep.prev);
   // Oct 29: one summary line per phone at the end (reading results = one line, not the whole file).
-  const res = store.get('lc.test.res', {}); res[tStep.code] = (/^done/.test(result) ? 'ok ' : 'NO ') + sec + 's'; store.set('lc.test.res', res);
+  const res = store.get('lc.test.res', {}); res[tStep.code] = (/^done/.test(result) ? 'ok ' : 'NO ') + sec + 's' + ' @' + Date.now(); store.set('lc.test.res', res);
   line('Test ' + tStep.code + ': ' + result + '.', 6000);
   store.set('lc.test.i', store.get('lc.test.i', 0) + 1); tStep = null;
-  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) { const res = store.get('lc.test.res', {}), sum = L.map(t => t[0] + ' ' + (res[t[0]] || '-')).join(', ');
+  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) { const res = store.get('lc.test.res', {}), sum = L.map(t => t[0] + ' ' + resText(res[t[0]])).join(', ');
       tLog('SUMMARY ' + sum); line('All tests on this phone done: ' + sum, 60000) } testLabel(); return }
   setTimeout(() => { if (tRun && !tStep && cur) { startTest(); testLabel() } }, 5000); testLabel() }
 function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;

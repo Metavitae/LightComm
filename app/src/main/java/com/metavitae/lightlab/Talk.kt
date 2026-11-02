@@ -207,6 +207,19 @@ class Talk(
         return true
     }
 
+    /** A send failed because the camera was taken: keep opening it again (every 5 s) for up to 60 s, until pictures come. */
+    private fun waitCameraBack(k: Int) {
+        log("# camera taken during a send: opening it again before the next try\n")
+        if (camLost.isEmpty()) camLost = "taken during a send"
+        val before = rx.newest(); val until = now() + 60
+        while (alive && now() < until && k !in stoppedK) {
+            reopenIfLost()
+            if (camLost.isEmpty() && rx.newest() > before) { log("# camera back, sending again\n"); return }
+            Thread.sleep(300)
+        }
+        log("# camera still not back after waiting\n")
+    }
+
     /** Close the camera, open it with automatic brightness for a moment (as the Camera app does), then fixed settings again. True = not black now. */
     private fun restartAuto(): Boolean {
         closeCam()
@@ -483,6 +496,9 @@ class Talk(
             rx.expectRate = mode.perSec
             rx.expect = s.nonce
             val listenAfter = openCam()
+            // Nov 2 (outside, 03:02): another camera user took the POCO's camera mid-send; the tries failed at once and the
+            // camera never came back until the person opened the Camera app. Now: wait here and open it again before the next try.
+            if (s.failure != null && "CAMERA" in s.failure.toString()) waitCameraBack(k)
             var got: Boolean? = null; var seenAfter = 0.0
             val w = WaitLook()
             if (s.failure == null) {
