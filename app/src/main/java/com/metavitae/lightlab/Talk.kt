@@ -116,12 +116,22 @@ class Talk(
     private val REPLY_PRIORITY = 6.0
     /** Oct 18: both phones started sending at the same moment and kept retrying in step. A random extra wait before
      *  each send (0-1.5 s, new every time), and giving way when the other phone is heard (at most 3 times a message). */
-    private var jitter = Math.random() * 1.5
+    private var jitter = (1.0 + Math.random() * 3.0)
     private var giveWays = 0
     private var busySince = 0.0
     private var busyIgnored = false
     /** deliver() result "round" when it gave way to the other phone (-1 = stopped by the person). */
     private val GAVE_WAY = -2.0
+    // Nov 2 (founder): who goes next. The phone that sent last waits for the answer (up to ANSWER_WAIT), except for the
+    // next part of its own long message, which goes on. A phone that just read part k of n (k < n) lets the other parts come first.
+    private var iSentLast = false; private var lastSentAt = 0.0; private var waitNote = ""
+    private var otherMidParts = false; private var otherPartAt = 0.0
+    private val ANSWER_WAIT = 45.0; private val PARTS_WAIT = 90.0
+    private val PART = Regex("^~[a-z](\\d+)/(\\d+) ")
+    private fun laterPart(t: String) = PART.find(t)?.let { it.groupValues[1].toInt() > 1 } ?: false
+    /** On a clash, give way only if this phone sent last (or nobody has sent yet): the other one keeps its turn. */
+    private fun shouldYield() = iSentLast || lastSentAt == 0.0 && otherPartAt == 0.0 && !heardAny
+    private var heardAny = false
     private fun log(s: String) = file.append(s)
     private fun f1(x: Double) = String.format(Locale.US, "%.1f", x)
 
@@ -387,11 +397,22 @@ class Talk(
                 if (now() - busySince < 30) { quietSince = now(); continue }
                 log("# still blinking after 30 s: sending anyway\n"); busyIgnored = true
             }
+            if (next < box.size && !sendNow && !o.turns) {
+                val waitAns = iSentLast && !laterPart(box[next]) && now() - lastSentAt < ANSWER_WAIT
+                val waitParts = otherMidParts && now() - otherPartAt < PARTS_WAIT
+                if (waitAns || waitParts) {
+                    val why = if (waitParts) "the other phone is still sending the parts of a long message" else "this phone sent last: waiting for the other phone's answer"
+                    if (waitNote != why) { log("# $why\n"); waitNote = why }
+                    quietSince = now(); continue
+                }
+                if (waitNote.isNotEmpty()) { log("# done waiting (${if (iSentLast) "no answer in ${ANSWER_WAIT.toInt()} s" else "the other phone answered"}): sending\n"); waitNote = "" }
+                otherMidParts = false
+            }
             if (next < box.size && turnOk && now() >= startAt && (sendNow || (!rx.hearing && now() - quietSince >= o.gap + jitter))) {
                 if (sendNow) { sendNow = false; Thread.sleep(800) }
                 val text = box[next]
                 val (ok, n, round) = deliver(text, next + 1)
-                jitter = Math.random() * 1.5
+                jitter = (1.0 + Math.random() * 3.0)
                 if (!ok && round == GAVE_WAY) { giveWays++; quietSince = now(); continue }   // answer the other phone first, then this one again
                 giveWays = 0
                 if (!ok && round < 0) {
@@ -401,7 +422,7 @@ class Talk(
                 events?.sent(next + 1, text, ok, n, round)
                 // After "got it", the other side gets the first turn to answer (Oct 14: both phones kept sending at once).
                 if (ok && !o.turns) { quietSince = now() + REPLY_PRIORITY; sendNow = false }
-                if (ok) myTurn = false
+                if (ok) { myTurn = false; iSentLast = true; lastSentAt = now() }
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
                 if (next == box.size) {
@@ -420,7 +441,8 @@ class Talk(
         if (r.ok) {
             rx.inLink = if (r.seq == 0) BrightFormat.Link(r.nonce, r.phoneTag, r.pminMs, 0)
                         else rx.inLink?.let { it.copy(lastSeq = max(it.lastSeq, r.seq)) }
-            if (!dup) show("Read: \"${r.text}\"")
+            if (!dup) { show("Read: \"${r.text}\""); iSentLast = false; heardAny = true
+                otherMidParts = PART.find(r.text)?.let { it.groupValues[1].toInt() < it.groupValues[2].toInt() } ?: false; otherPartAt = now() }
         }
         events?.heard(r, dup)
         val ended = now() - (rx.newest() - r.endT)     // when the message ended, on this clock
@@ -476,7 +498,14 @@ class Talk(
             if (!alive) break
             if (k in stoppedK) { usedUp(useShort, seq, blinkedBefore(useShort, seq, attempt)); return Triple(false, attempt - 1, -1.0) }
             // Oct 19: listen before a resend too. The other phone blinking now = it's talking: read and answer it first.
-            if (attempt > 1 && giveWays < 3 && rx.busy()) {
+            // Nov 2: the phone that did not send last keeps its turn: it waits for the other light to stop, then sends again.
+            if (attempt > 1 && rx.busy() && !shouldYield()) {
+                log("# other phone blinking before try $attempt: this phone has the turn, waiting for it to stop\n")
+                val until = now() + 30
+                while (alive && rx.busy() && now() < until && k !in stoppedK) Thread.sleep(200)
+                Thread.sleep((500 + Math.random() * 1500).toLong())
+            }
+            if (attempt > 1 && giveWays < 3 && rx.busy() && shouldYield()) {
                 log("# other phone blinking before try $attempt: giving way\n")
                 if (useShort) gaveWaySeq = seq
                 return Triple(false, attempt - 1, GAVE_WAY)
@@ -516,7 +545,7 @@ class Talk(
             if (s.failure == null && got != true) log(w.line() + String.format(Locale.US, "# best reply match seen: %.2f (taken at %.2f, or %.2f with a clear lead)\n",
                 rx.replyNear, BrightDecoder.REPLY_SURE, BrightDecoder.REPLY_WEAK))
             // No got-it, and the other phone was blinking meanwhile: it's talking too. Let the main loop read and answer it, then resend.
-            if (got == null && !(k in stoppedK) && giveWays < 3 && (w.heard || rx.hearing || rx.heard.isNotEmpty())) {
+            if (got == null && !(k in stoppedK) && giveWays < 3 && shouldYield() && (w.heard || rx.hearing || rx.heard.isNotEmpty())) {
                 rx.expect = -1
                 log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,NO REPLY - OTHER PHONE TALKING: GIVING WAY,0.0,0.0,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
                     mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, text.replace("\"", "'")))

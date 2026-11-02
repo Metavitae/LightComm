@@ -650,22 +650,17 @@ function doFind(){ if (findTimer) return; findCount = 10;
 // Codes match the printed 67 ft plan. Each test waits for its copy back (auto-answer on the other phone). Where it got to
 // is kept, so a tap pauses after the current test and the next tap carries on. D (camera) needs a person: last, it waits.
 const LONG = ' LONG MESSAGE. WE ARE AT THE NORTH GATE WITH TWO PEOPLE, ONE HAS A HURT ANKLE. PLEASE BRING THE TRUCK TO THE ROAD BY THE BIG TREE AND KEEP YOUR LIGHTS ON SO WE CAN FIND YOU. THANK YOU, SEE YOU SOON.';
-const TESTS = {
-  POCO: [['A1','plain','A1 HELLO FROM THE POCO'], ['A2','plain','A2 HELLO FROM THE POCO'], ['A3','plain','A3 HELLO FROM THE POCO'],
-    ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E2','plain','E2' + LONG],
-    // Oct 19 handheld (Sol's question: does a held phone fail from moving, or from weak light?). This phone stays on its stand;
-    // the person holds the 8T 1-2 m away (it sees this phone's light strongly, so a failure there is the hand).
-    ['H1','hand','H1 HELD STEADY', 'H1-H3: leave THIS phone (POCO) on its stand. 1) Tap TEST. 2) Pick up the OTHER phone (8T), stand 1-2 m (3-6 ft) away and point its back camera at this phone. Keep holding it through H3. Sending starts 15 s after the tap.'],
+// Nov 2 (founder, after the 45-step night): two test lists running at once made the phones talk over each other.
+// Now ONE list, run from ONE phone (either); the other phone only copies back. Swap phones for a second round.
+const ME = () => /POCO/.test(LC.phone()) ? 'POCO' : '8T', OTHER = () => ME() === 'POCO' ? '8T' : 'POCO';
+const myTests = () => [['A1','plain','A1 HELLO FROM THE ' + ME()], ['A2','plain','A2 HELLO FROM THE ' + ME()], ['A3','plain','A3 HELLO FROM THE ' + ME()],
+    ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E1','plain','E1' + LONG],
+    ['P1','preset',5], ['N1','beacon',''], ['D1','cam','D1 CAMERA CAME BACK'],
+    // Oct 19 handheld: this phone stays on its stand, the person holds the other phone 1-2 m away.
+    ['H1','hand','H1 HELD STEADY', 'H1-H3: leave THIS phone on its stand. 1) Tap TEST. 2) Pick up the OTHER phone (' + OTHER() + '), stand 1-2 m (3-6 ft) away and point its back camera at this phone. Keep holding it through H3. Sending starts 15 s after the tap.'],
     ['H2','plain','H2 HELD STEADY'], ['H3','plain','H3 HELD STEADY'],
-    ['H4','hand','H4 HELD NATURALLY', 'H4-H6: leave THIS phone (POCO) on its stand. 1) Tap TEST. 2) Hold the OTHER phone (8T) 1-2 m away the way you read a message, no aiming. Keep holding it through H6. Sending starts 15 s after the tap.'],
-    ['H5','plain','H5 HELD NATURALLY'], ['H6','plain','H6 HELD NATURALLY'],
-    // Oct 29: ready-made code and the us beacon (the 8T, auto-answer on, says "(SEEN BEACON)" when it sees this phone's beacon).
-    ['P1','preset',5], ['N1','beacon',''],
-    ['D1','cam','D1 CAMERA CAME BACK']],
-  '8T': [['A4','plain','A4 HELLO FROM THE 8T'], ['A5','plain','A5 HELLO FROM THE 8T'], ['A6','plain','A6 HELLO FROM THE 8T'],
-    ['B3','stop','B3'], ['B4','stop','B4'], ['C3','both','C3'], ['C4','both','C4'], ['E1','plain','E1' + LONG],
-    ['P2','preset',11], ['N2','beacon',''], ['D2','cam','D2 CAMERA CAME BACK']] };
-const myTests = () => TESTS[/POCO/.test(LC.phone()) ? 'POCO' : '8T'];
+    ['H4','hand','H4 HELD NATURALLY', 'H4-H6: leave THIS phone on its stand. 1) Tap TEST. 2) Hold the OTHER phone (' + OTHER() + ') 1-2 m away the way you read a message, no aiming. Keep holding it through H6. Sending starts 15 s after the tap.'],
+    ['H5','plain','H5 HELD NATURALLY'], ['H6','plain','H6 HELD NATURALLY']];
 let tRun = false, tPause = false, tStep = null;
 // Oct 19 (founder): a countdown after the start tap, to set the phone back in its stand. A tap during it cancels.
 const T_COUNT = 15; let tCount = 0, tCountTimer = null;
@@ -681,7 +676,7 @@ function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
 function testTap(){ const L = myTests(); let i = testPos(L);
   if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
   if (tStep && tStep.wait && tStep.kind === 'hand') { const s0 = tStep; s0.wait = false; s0.hold = true; tLog(s0.code + ' tapped: sending in ' + T_COUNT + ' s')
-    line('Pick up the 8T now: sending in ' + T_COUNT + ' s.', 5000)
+    line('Pick up the ' + OTHER() + ' now: sending in ' + T_COUNT + ' s.', 5000)
     setTimeout(() => { if (tStep !== s0 || !cur) return; s0.hold = false; s0.t0 = Date.now(); send(s0.text); s0.m = msgs[msgs.length - 1]; tLog(s0.code + ' sent (held in hand)'); testLabel() }, T_COUNT * 1000)
     testLabel(); return }
   if (tStep && tStep.wait) { tStep.wait = false; tStep.t0 = Date.now(); send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(tStep.code + ' sent after the camera'); testLabel(); return }
@@ -773,6 +768,9 @@ function tick(){
         if (hm) line(+hm[1] < 3 ? 'Handheld test: you hold THIS phone. Keep its back camera pointed at the other phone until H3.' : +hm[1] === 3 ? 'H3 done. You can put this phone down until the next step.'
           : +hm[1] < 6 ? 'Handheld test: you hold THIS phone the way you read a message, no aiming, until H6.' : 'H6 done. Put this phone back where it was.', 30000);
         else line(e.snr < 7 ? 'Faint light. It worked, but move closer or change the light.' : 'Message from ' + whoIs(e.from) + '.', 5000);
+        // Nov 2: only one phone runs tests. A test message from the other phone while this one runs = stop here after this test.
+        if (tRun && !tPause && !COPY.test(words) && /^[A-H][1-6] /.test(words)) { tPause = true; tLog('paused: the other phone is running tests too'); testLabel()
+          line('The other phone is running tests. Only one phone runs tests at a time: this one stops after its current test.', 15000) }
         if (auto && !cur.practice && !COPY.test(words) && words !== SEEN_BEACON) send('(COPY) ' + words, true) }
       else if (!e.ok) line('Saw a message but could not read it. Asked them to send again.', 5000) }
     else if (e.type === 'problem') line(e.text, 10000)
