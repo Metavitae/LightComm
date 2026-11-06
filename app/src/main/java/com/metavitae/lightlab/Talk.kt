@@ -88,6 +88,10 @@ class Talk(
      */
     fun stopMessage(k: Int) { stoppedK.add(k); if (sendingK == k) sender.running = false }
     fun waiting(): Int = box.size - next
+    /** Nov 6 (80-90 steps): long parts (over 2 min of blinking at the slowest speed) never got through, short ones did.
+     *  Weak link = at the slowest speed, or the last message needed more than one try (or never got through): the page
+     *  then cuts long messages into smaller parts (LC.partBytes), so one bad moment costs less. */
+    @Volatile var weak = false
     /** How the camera sensor is turned (for drawing the zone map over the preview). */
     val sensorOrientation: Int get() = cam?.sensorOrientation ?: 90
 
@@ -565,6 +569,7 @@ class Talk(
                 mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, outcome, seenAfter, if (got == true) now() - t0 else 0.0, text.replace("\"", "'")))
             if (got == true) {
                 if (w.n > 0) goodTop = w.topMin
+                weak = attempt > 1 || (o.auto && li == ladder.size - 1)
                 outLink = if (useShort) outLink!!.copy(lastSeq = seq) else BrightFormat.Link(s.nonce, BrightFormat.phoneTag(android.os.Build.MODEL), s.pminMs, 0)
                 if (attempt == 1) streak++ else streak = 0
                 if (o.auto && li > 0 && streak >= 2) { li--; streak = 0; log("# auto-speed: up to ${BrightFormat.MODES[ladder[li]].name}\n") }
@@ -584,6 +589,7 @@ class Talk(
             // No reply: maybe the other phone was sending too. Wait a random extra moment so the two drift apart.
             if (got == null && !o.turns) Thread.sleep((1000 + Math.random() * 4000).toLong())
         }
+        weak = true
         usedUp(useShort, seq, true)
         show("Message $k NOT delivered after ${o.tries} tries")
         return Triple(false, o.tries, 0.0)

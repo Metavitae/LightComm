@@ -46,10 +46,10 @@ object BrightSim {
     data class Outcome(val ok: Boolean, val bitErrors: Int, val bits: Int, val stage: String, val seconds: Double)
 
     /** seq >= 1: a short opening (follow-up number seq of a link made by an earlier full send). */
-    fun run(text: String, mode: BrightFormat.Mode, torch: Torch, cam: Cam, room: Room, seed: Int, verbose: Boolean = false, snrScale: Double = 1.0, seq: Int = 0): Outcome {
+    fun run(text: String, mode: BrightFormat.Mode, torch: Torch, cam: Cam, room: Room, seed: Int, verbose: Boolean = false, snrScale: Double = 1.0, seq: Int = 0, nonceIs: Int = -1): Outcome {
         val r = Random(seed)
         val pass = "LIGHTCOMM"
-        val nonce = r.nextInt(65536)
+        val nonce = r.nextInt(65536).let { if (nonceIs >= 0) nonceIs else it }
         // Sender: each switch is a call that takes a while; the light changes near its end; calls queue up.
         // The sync part is played first while the sender times its own switches.
         val lead = 1.0 + r.nextDouble()           // receiver starts recording this long before the send

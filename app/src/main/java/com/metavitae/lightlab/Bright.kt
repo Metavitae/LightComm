@@ -881,15 +881,25 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         // Shadow check (Oct 19 measurement, nothing changes on the wire): the first text a shorter check
         // (the top 8 or 12 bits of today's 16) would have let through. Differs from the real result = a wrong text it would have shown.
         val shadow = arrayOfNulls<String>(2); val shadowBits = intArrayOf(8, 12)
+        val ks = MessageFormat.keystream(pass, nonce, len + 3)
+        /** Text from soft bits, or null when the check bytes say it's wrong. */
+        fun fromLlr(llr: DoubleArray): String? {
+            val plain = BrightFormat.softDecode(llr)
+            val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
+            val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
+            return if (crc == BrightFormat.crc16(bytes)) (if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8)) else null
+        }
+        val passLlr = ArrayList<DoubleArray>()
         fun read(body: IntArray): Pair<IntArray, String?> {
             val data = body.filterIndexed { j, _ -> !isPilot[j] }.toIntArray()
             val nb = BrightFormat.codedBodyBitCount(len)
             val coded = BrightFormat.symbolsToBits(data, mode, nb)
             val soft = lastSoft.filterIndexed { j, _ -> !isPilot[j] }
             val llr = BrightFormat.softBits(soft, mode, nb)
-            val ks = MessageFormat.keystream(pass, nonce, len + 3)
+            val capped = DoubleArray(llr.size) { llr[it].coerceIn(-SOFT_CAP, SOFT_CAP) }
+            passLlr.add(capped)
             // Soft repair (capped, so one badly timed pulse can't shout down its neighbours), then plain repair.
-            for (plain in listOf(BrightFormat.softDecode(DoubleArray(llr.size) { llr[it].coerceIn(-SOFT_CAP, SOFT_CAP) }),
+            for (plain in listOf(BrightFormat.softDecode(capped),
                                  BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
                 val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
                 val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
@@ -916,6 +926,28 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val r = read(body); coded = r.first; text = r.second
             note = headerNote + if (pass == 2) "pass 2 (brightness followed, guess-free)" else "pass 3 (brightness followed from guesses)"
         }
+        // Nov 6 (80-90 steps): part 1 of the long message came twice (same nonce) and both tries failed the check
+        // by a few bits. A failed try is kept (how sure each bit was) and added to the next try of the same message:
+        // bits that were weak once are usually clear the other time. The check bytes still guard the joined text.
+        val tNow = System.nanoTime() / 1e9
+        if (text == null && passLlr.isNotEmpty()) {
+            val prev = synchronized(EARLIER) { EARLIER[nonce] }?.takeIf { it.len == len && it.packed == packed && tNow - it.at < EARLIER_SEC && it.llr.size == passLlr[0].size }
+            if (prev != null) for (l in passLlr) {
+                val t = fromLlr(DoubleArray(l.size) { l[it] + prev.llr[it] }) ?: continue
+                text = t; note = headerNote + "read by joining with ${prev.tries} earlier ${if (prev.tries == 1) "try" else "tries"}"; break
+            }
+            if (text == null) {
+                val best = passLlr.maxByOrNull { a -> a.sumOf { abs(it) } }!!
+                val keep = if (prev != null) DoubleArray(best.size) { best[it] + prev.llr[it] } else best
+                synchronized(EARLIER) {
+                    EARLIER[nonce] = Earlier(len, packed, keep, tNow, (prev?.tries ?: 0) + 1)
+                    EARLIER.entries.removeAll { tNow - it.value.at >= EARLIER_SEC }
+                    while (EARLIER.size > 8) EARLIER.remove(EARLIER.keys.first())
+                }
+                note += "; kept to join with the next try"
+            }
+        }
+        if (text != null) synchronized(EARLIER) { EARLIER.remove(nonce) }
         for (k in 0..1) if (shadow[k] != null && shadow[k] != text) note += "; SHADOW ${shadowBits[k]}-bit check: WRONG TEXT"
         // How many of the mode's levels stand clearly apart on the best channel (gap > 3 x noise).
         val lv = levelOn.map { best.F(it / mode.symSec) }
@@ -928,6 +960,12 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
     }
 
     companion object {
+        /** A failed try kept to join with the next try of the same message (by nonce). Shared by all decoders:
+         *  the listener makes a new decoder when the camera setting changes. */
+        class Earlier(val len: Int, val packed: Boolean, val llr: DoubleArray, val at: Double, val tries: Int)
+        @JvmField val EARLIER = LinkedHashMap<Int, Earlier>()
+        /** A resend comes within minutes; older kept tries are dropped. */
+        @JvmField var EARLIER_SEC = 900.0
         /** For the simulator only: the true header symbols, to print how many were misread. */
         @JvmField var debugHdr: IntArray? = null
         @JvmField var debugRate = 0

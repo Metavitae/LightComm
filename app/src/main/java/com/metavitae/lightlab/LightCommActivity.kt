@@ -189,6 +189,8 @@ class LightCommActivity : Activity() {
         /** Returns the message's number k (0 = not listening), so the page can follow and stop it. */
         @JavascriptInterface fun send(text: String): Int = talk?.enqueue(if (bytes(text) <= BrightFormat.MAX_BYTES) text else text.take(80)) ?: 0
         /** Bytes this text takes as light (packed when that is shorter): the page splits long messages into parts that fit (Oct 15). */
+        /** Most bytes per part of a long message: smaller while the link is weak (Nov 6). */
+        @JavascriptInterface fun partBytes(): Int = if (talk?.weak == true) BrightFormat.MAX_BYTES / 2 else BrightFormat.MAX_BYTES
         @JavascriptInterface fun bytes(text: String): Int = TextPack.pack(text)?.size ?: text.toByteArray(Charsets.UTF_8).size
         /** Stop message k so the person can edit it (the page puts its text back in the typing box). */
         @JavascriptInterface fun stop(k: Int) { talk?.stopMessage(k) }

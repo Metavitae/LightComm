@@ -599,15 +599,20 @@ function msgDelete(){ const a = picked(); if (!a.length) return;
 // Auto-answer copies start with "(COPY) " (founder Oct 15: in parentheses, so a typed "copy that" is still answered). Never answered: no loops.
 const COPY = /^\(COPY\) /;
 const PART = /^~([a-z])([1-9])\/([1-9]) ([\s\S]*)$/;
-function splitParts(text){ if (LC.bytes(text) <= 80) return [text];
+// Nov 6: while the link is weak the phone asks for smaller parts (40 bytes, not 80): at 80-90 steps the long parts failed,
+// short ones got through. Never more than 9 parts: if smaller parts would make more, the part size grows again.
+function splitParts(text){ const want = LC.partBytes ? LC.partBytes() : 80; if (LC.bytes(text) <= want) return [text];
   const g = 'abcdefghijklmnopqrstuvwxyz'[store.get('lc.grp', 0) % 26]; store.set('lc.grp', store.get('lc.grp', 0) + 1);
-  const fits = t => LC.bytes('~' + g + '9/9 ' + t) <= 80, out = []; let a = 0;
+  for (let size = want; size <= 80; size += 10) { const ps = cutParts(text, g, size); if (ps.length <= 9) return ps }
+  return null }
+function cutParts(text, g, size){
+  const fits = t => LC.bytes('~' + g + '9/9 ' + t) <= size, out = []; let a = 0;
   while (a < text.length) { let b = a, best = -1;
     // Grow word by word (each part keeps its trailing space, so the parts join back exactly).
     while (b < text.length) { let c = text.indexOf(' ', b); c = c < 0 ? text.length : c + 1; if (!fits(text.slice(a, c))) break; best = b = c }
     if (best < 0) { best = a + 1; while (best < text.length && fits(text.slice(a, best + 1))) best++ }   // one very long word: cut it
     out.push(text.slice(a, best)); a = best }
-  return out.length > 9 ? null : out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + ' ' + t) }
+  return out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + ' ' + t) }
 function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…';
   if (!m.parts) { const ps = splitParts(m.wire || m.text); if (!ps) { m.state = 'failed'; m.meta = 'TOO LONG · MAKE IT SHORTER'; drawMsgs(); return } m.parts = ps.map(t => ({ t, ok:false })) }
   m.parts.forEach(p => { if (!p.ok) p.k = LC.send(p.t) }); m.k = (m.parts.find(p => !p.ok) || {}).k; drawMsgs() }
