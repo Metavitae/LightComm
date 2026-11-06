@@ -425,6 +425,28 @@ function invite(){ const n = store.get('lc.name', ''); LC.share((n ? n + ' would
 // ---------- us beacon (Oct 29) ----------
 function setBeacon(on){ store.set('lc.beacon', on); LC.beacon(on); drawSettings(); line(on ? 'Beacon on: this phone blinks this chat\'s own pattern every 30 s while idle.' : 'Beacon off.', 5000) }
 const SEEN_BEACON = '(SEEN BEACON)';
+// ---------- How far? (Nov 6, founder: GPS distance; route "a button + once per test round") ----------
+// Tap "How far?": this phone sends its GPS position (scrambled by the key words like every message); the other phone
+// answers with its own at once, and both show the distance. Positions are sent only when someone asks.
+const WHERE_ASK = '(WHERE?) ', WHERE_IS = '(HERE) ';
+const POS = /^\((WHERE\?|HERE)\) (-?\d+\.\d+),(-?\d+\.\d+),(\d+)$/;
+function myPos(){ try { const s = LC.where(); return s ? JSON.parse(s) : null } catch (e) { return null } }
+const posWire = (kind, p) => kind + p.lat.toFixed(5) + ',' + p.lon.toFixed(5) + ',' + Math.min(999, Math.round(p.acc));
+function meters(a, b){ const R = 6371000, r = x => x * Math.PI / 180, dLa = r(b.lat - a.lat), dLo = r(b.lon - a.lon);
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)) }
+/** Wait (up to 30 s) for a fresh position: good (within 30 m) or the best after 20 s. null = none. */
+function withFix(fn){ try { LC.locate() } catch (e) { fn(null); return } let n = 0;
+  const t = setInterval(() => { const p = myPos(); n++;
+    if (p && p.age < 120 && (p.acc <= 30 || n >= 20)) { clearInterval(t); fn(p) } else if (n >= 30) { clearInterval(t); fn(p && p.age < 600 ? p : null) } }, 1000) }
+function howFar(fail){ if (!cur || cur.practice) return; line('Getting this phone\'s position (outside works best)…', 30000);
+  withFix(p => { if (!cur) return; if (!p) { line('No position: turn location on or go outside, then try again.', 8000); if (fail) fail(); return }
+    send('How far? · my position sent (GPS ± ' + Math.round(p.acc) + ' m)', false, posWire(WHERE_ASK, p)) }) }
+const distText = (d, a, b) => '≈ ' + (d < 1000 ? Math.round(d) + ' m' : (d / 1000).toFixed(1) + ' km') + ' away · GPS ± ' + Math.round(a + b) + ' m';
+/** Their position came: show the distance on that message (and in the log). */
+function gotPos(m, theirs, mine){ if (!mine) { m.text = 'Their position came, but this phone has none yet.'; drawMsgs(); return }
+  const d = meters(mine, theirs); m.dist = Math.round(d); m.text = distText(d, mine.acc, theirs.acc); drawMsgs();
+  line(m.from + ' is ' + m.text + '.', 10000);
+  tLog('distance ' + Math.round(d) + ' m (this phone GPS ± ' + Math.round(mine.acc) + ' m, the other ± ' + Math.round(theirs.acc) + ' m)') }
 const nearWho = () => cur ? (cur.contact ? cur.name : 'Someone from ' + cur.name) : 'Someone';
 
 // ---------- chats ----------
@@ -513,6 +535,7 @@ function chatMenu(c){ if (!c || c.swap) return;
     { label: c.muted ? 'Unmute' : 'Mute', fn: () => { c.muted = !c.muted; saveChats(); applyMute(); line(c.muted ? 'Muted: no sounds and no "new" on the widget for this chat.' : 'Unmuted.', 5000) } },
     { label: c.pinned ? 'Unpin' : 'Pin to the top', fn: () => { c.pinned = !c.pinned; saveChats() } },
     !fixed(c) && { label: 'Rename', fn: () => renameChat(c) },
+    !c.practice && { label: 'How far? (send my position)', fn: () => howFar() },
     { label: 'Select messages', fn: () => { selMsgs = new Set(); drawMsgs(); line('Tap the messages to select them.', 6000) } },
     { label: 'Clear messages', danger: true, fn: () => confirmSheet('Clear the messages?', 'The chat stays; its messages are erased from this phone.', 'Clear', () => clearChats([c])) },
     c.contact && { label: 'Block ' + c.name, danger: true, fn: () => blockChat(c) },
@@ -660,7 +683,7 @@ const LONG = ' LONG MESSAGE. WE ARE AT THE NORTH GATE WITH TWO PEOPLE, ONE HAS A
 const ME = () => /POCO/.test(LC.phone()) ? 'POCO' : '8T', OTHER = () => ME() === 'POCO' ? '8T' : 'POCO';
 const myTests = () => [['A1','plain','A1 HELLO FROM THE ' + ME()], ['A2','plain','A2 HELLO FROM THE ' + ME()], ['A3','plain','A3 HELLO FROM THE ' + ME()],
     ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E1','plain','E1' + LONG],
-    ['P1','preset',5], ['N1','beacon',''], ['D1','cam','D1 CAMERA CAME BACK'],
+    ['P1','preset',5], ['N1','beacon',''], ['G1','where',''], ['D1','cam','D1 CAMERA CAME BACK'],
     // Oct 19 handheld: this phone stays on its stand, the person holds the other phone 1-2 m away.
     ['H1','hand','H1 HELD STEADY', 'H1-H3: leave THIS phone on its stand. 1) Tap TEST. 2) Pick up the OTHER phone (' + OTHER() + '), stand 1-2 m (3-6 ft) away and point its back camera at this phone. Keep holding it through H3. Sending starts 15 s after the tap.'],
     ['H2','plain','H2 HELD STEADY'], ['H3','plain','H3 HELD STEADY'],
@@ -703,6 +726,7 @@ function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.te
   if (kind === 'cam') { tStep.text = text; tStep.wait = true; line(code + ': open the Camera app for about 5 s, come back here, then tap TEST.', 600000); tLog(code + ' waiting for the camera step'); return }
   if (kind === 'beacon') { tStep.n0 = msgs.length; tStep.prev = store.get('lc.beacon', false); LC.beacon(true);
     line(code + ': beacon on. Waiting for the other phone to say it sees it.', 20000); tLog(code + ' beacon on'); return }
+  if (kind === 'where') { tStep.n0 = msgs.length; howFar(() => { if (tStep && tStep.code === code) endTest('no position on this phone') }); tLog(code + ' asking how far'); return }
   if (kind === 'preset') { tStep.text = presetText(text); send(tStep.text, false, presetWire(text)); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started (one code)'); return }
   tStep.text = kind === 'stop' ? code + ' STOP ME' : kind === 'both' ? code + ' FIRST' : text;
   send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(code + ' started') }
@@ -721,6 +745,7 @@ function endTest(result){ const L = myTests(), sec = Math.round((Date.now() - tS
 function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;
   if (!cur) { tRun = false; tStep = null; testLabel(); return }   // left the chat: paused, this test runs again next time
   if (age > (s.code[0] === 'E' ? 900 : 480)) return endTest('timed out');
+  if (s.kind === 'where') { const g = msgs.slice(s.n0).find(m => m.dir === 'in' && m.dist !== undefined); if (g) endTest('done, ' + g.dist + ' m'); return }
   if (s.kind === 'beacon') { if (msgs.slice(s.n0).some(m => m.dir === 'in' && m.text === SEEN_BEACON)) endTest('done, seen by the other phone'); return }
   if (s.kind === 'stop' && s.phase === 0 && m && m.meta && m.meta.indexOf('SENDING AS LIGHT') === 0) { s.phase = 1; s.blink = Date.now() }
   if (s.kind === 'stop' && s.phase === 1 && Date.now() - s.blink >= 15000) {
@@ -767,6 +792,10 @@ function tick(){
         m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
         line(m.whole ? 'Message from ' + m.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + m.from + '. The rest is coming.', 5000);
         if (m.whole && auto && !cur.practice && !COPY.test(m.text)) send('(COPY) ' + m.text, true) }
+      else if (e.ok && !e.dup && POS.test(e.text)) { const pm = POS.exec(e.text), theirs = { lat:+pm[2], lon:+pm[3], acc:+pm[4] }, ask = pm[1] === 'WHERE?';
+        const m = { dir:'in', from:whoIs(e.from), text:(ask ? 'Asked how far: ' : 'Their position: ') + 'working it out…', time:now(), meta:'RECEIVED · POSITION · ' + sig }; msgs.push(m); drawMsgs();
+        if (ask && !cur.practice) withFix(p => { if (p && cur) send('Here · my position sent (GPS ± ' + Math.round(p.acc) + ' m)', true, posWire(WHERE_IS, p)); gotPos(m, theirs, p) })
+        else { const p = myPos(); gotPos(m, theirs, p && p.age < 600 ? p : null) } }
       else if (e.ok && !e.dup) { const words = readWire(e.text);
         msgs.push({ dir:'in', from:whoIs(e.from), text:words, time:now(), meta:'RECEIVED · ' + (words !== e.text ? 'ONE CODE · ' : '') + sig }); drawMsgs();
         const hm = /^H([1-6]) HELD/.exec(e.text);   // Oct 24: the handheld steps were shown only on the POCO; the phone in the hand says it too

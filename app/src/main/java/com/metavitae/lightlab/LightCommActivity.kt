@@ -175,6 +175,33 @@ class LightCommActivity : Activity() {
     @Volatile private var beaconWanted = false
 
     /** What the page can call. Strings in, JSON strings out. */
+    // ---------- GPS distance (Nov 6, founder: "add the GPS distance too", route: a "How far?" button + once per test round)
+    /** Newest position this phone has (fresh fix, or the phone's last known one if under 2 min old). */
+    @Volatile private var fix: android.location.Location? = null
+    @Volatile private var fixAsked = 0L
+    private fun locate() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 2); return
+        }
+        val lm = getSystemService(android.location.LocationManager::class.java) ?: return
+        val providers = listOf(android.location.LocationManager.GPS_PROVIDER, android.location.LocationManager.NETWORK_PROVIDER).filter { try { lm.isProviderEnabled(it) } catch (_: Exception) { false } }
+        if (providers.isEmpty()) { push("problem", "text" to "Location is off on this phone: turn it on to measure how far."); return }
+        fixAsked = System.currentTimeMillis()
+        try {
+            for (p in providers) lm.getLastKnownLocation(p)?.let { l -> if (System.currentTimeMillis() - l.time < 120_000 && better(l)) fix = l }
+            for (p in providers) if (Build.VERSION.SDK_INT >= 30)
+                lm.getCurrentLocation(p, null, mainExecutor) { l -> if (l != null && better(l)) { fix = l; file?.append(String.format(java.util.Locale.US, "# position from %s: accuracy %.0f m\n", p, l.accuracy)) } }
+            else { @Suppress("DEPRECATION") lm.requestSingleUpdate(p, android.location.LocationListener { l -> if (better(l)) fix = l }, mainLooper) }
+        } catch (e: SecurityException) { push("problem", "text" to "Location permission is needed to measure how far.") }
+    }
+    /** A new position wins if the one kept is old (over 2 min) or less exact. */
+    private fun better(l: android.location.Location): Boolean { val f = fix ?: return true
+        return System.currentTimeMillis() - f.time > 120_000 || l.accuracy <= f.accuracy || l.time - f.time > 30_000 }
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+        super.onRequestPermissionsResult(code, perms, res)
+        if (code == 2) { if (res.isNotEmpty() && res[0] == PackageManager.PERMISSION_GRANTED) locate() else push("problem", "text" to "Without location, LightComm can't measure how far. Nothing else changes.") }
+    }
+
     inner class Bridge {
         @JavascriptInterface fun beacon(on: Boolean) { beaconWanted = on; talk?.beaconOn = on && talkKey != SWAP_KEY && talkKey != PRACTICE_KEY; file?.append("# screen: beacon ${if (on) "on" else "off"}\n") }
         /** Android's share sheet (WhatsApp, SMS, email...) with this text. */
@@ -182,6 +209,11 @@ class LightCommActivity : Activity() {
             try { startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(android.content.Intent.EXTRA_TEXT, text), "Invite with")) } catch (_: Exception) {}
         }
+        /** Start getting this phone's position (asks for the permission the first time). */
+        @JavascriptInterface fun locate() = runOnUiThread { this@LightCommActivity.locate() }
+        /** This phone's position as JSON {lat, lon, acc (m), age (s)}, or "" when there is none yet. */
+        @JavascriptInterface fun where(): String = fix?.let { l -> JSONObject().put("lat", l.latitude).put("lon", l.longitude)
+            .put("acc", l.accuracy.toDouble()).put("age", (System.currentTimeMillis() - l.time) / 1000).toString() } ?: ""
         @JavascriptInterface fun phone(): String = BrightFormat.KNOWN_PHONES[Build.MODEL] ?: Build.MODEL
         @JavascriptInterface fun open(key: String) = runOnUiThread { startTalk(key) }
         @JavascriptInterface fun chatName(name: String) { chatName = name; widget("Listening", name) }
