@@ -536,6 +536,7 @@ function chatMenu(c){ if (!c || c.swap) return;
     { label: c.pinned ? 'Unpin' : 'Pin to the top', fn: () => { c.pinned = !c.pinned; saveChats() } },
     !fixed(c) && { label: 'Rename', fn: () => renameChat(c) },
     !c.practice && { label: 'How far? (send my position)', fn: () => howFar() },
+    !c.practice && (tSet === 'hand' ? { label: 'Tests: switch to the distance round', fn: () => setTests('far') } : { label: 'Tests: switch to the hand round (H1-H6)', fn: () => setTests('hand') }),
     { label: 'Select messages', fn: () => { selMsgs = new Set(); drawMsgs(); line('Tap the messages to select them.', 6000) } },
     { label: 'Clear messages', danger: true, fn: () => confirmSheet('Clear the messages?', 'The chat stays; its messages are erased from this phone.', 'Clear', () => clearChats([c])) },
     c.contact && { label: 'Block ' + c.name, danger: true, fn: () => blockChat(c) },
@@ -681,7 +682,14 @@ const LONG = ' LONG MESSAGE. WE ARE AT THE NORTH GATE WITH TWO PEOPLE, ONE HAS A
 // Nov 2 (founder, after the 45-step night): two test lists running at once made the phones talk over each other.
 // Now ONE list, run from ONE phone (either); the other phone only copies back. Swap phones for a second round.
 const ME = () => /POCO/.test(LC.phone()) ? 'POCO' : '8T', OTHER = () => ME() === 'POCO' ? '8T' : 'POCO';
-const myTests = () => [['A1','plain','A1 HELLO FROM THE ' + ME()], ['A2','plain','A2 HELLO FROM THE ' + ME()], ['A3','plain','A3 HELLO FROM THE ' + ME()],
+// Nov 6 (founder: "we're trying to get far; H1-H6 are for handheld close proximity"): two lists. The distance round
+// (A-G, D1) and the hand round (H1-H6, 1-2 m, the other phone in hand). Each keeps its own place and results.
+let tSet = store.get('lc.test.set', 'far');
+const TK = k => tSet === 'hand' ? k + '.hand' : k;
+function setTests(v){ if (tRun || tCountTimer) { line('Pause the tests first.', 4000); return } tSet = v; store.set('lc.test.set', v); testLabel();
+  line(v === 'hand' ? 'Hand round: H1-H6, 1-2 m, the other phone held in hand.' : 'Distance round: A1-D1 with How far (G1), phones on their stands.', 6000) }
+const myTests = () => tSet === 'hand' ? allTests().filter(t => t[0][0] === 'H') : allTests().filter(t => t[0][0] !== 'H');
+const allTests = () => [['A1','plain','A1 HELLO FROM THE ' + ME()], ['A2','plain','A2 HELLO FROM THE ' + ME()], ['A3','plain','A3 HELLO FROM THE ' + ME()],
     ['B1','stop','B1'], ['B2','stop','B2'], ['C1','both','C1'], ['C2','both','C2'], ['E1','plain','E1' + LONG],
     ['P1','preset',5], ['N1','beacon',''], ['G1','where',''], ['D1','cam','D1 CAMERA CAME BACK'],
     // Oct 19 handheld: this phone stays on its stand, the person holds the other phone 1-2 m away.
@@ -694,12 +702,12 @@ let tRun = false, tPause = false, tStep = null;
 const T_COUNT = 15; let tCount = 0, tCountTimer = null;
 // The saved place belongs to one test list: a build that adds or moves tests starts again from the first one.
 function testPos(L){ const sig = L.map(t => t[0]).join(',');
-  if (store.get('lc.test.list', '') !== sig) { store.set('lc.test.list', sig); store.set('lc.test.i', 0); store.set('lc.test.res', {}) }
-  return store.get('lc.test.i', 0) }
+  if (store.get(TK('lc.test.list'), '') !== sig) { store.set(TK('lc.test.list'), sig); store.set(TK('lc.test.i'), 0); store.set(TK('lc.test.res'), {}) }
+  return store.get(TK('lc.test.i'), 0) }
 function testLabel(){ const L = myTests(), i = testPos(L), b = $('testBtn'); if (!b) return;
   if (tCountTimer) { b.textContent = 'TEST · STARTS IN ' + tCount + ' S · TAP TO CANCEL'; return }
-  b.textContent = tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
-    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0] }
+  b.textContent = (tSet === 'hand' ? 'HAND ' : '') + (tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
+    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0]) }
 function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
 function testTap(){ const L = myTests(); let i = testPos(L);
   if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
@@ -710,8 +718,8 @@ function testTap(){ const L = myTests(); let i = testPos(L);
   if (tStep && tStep.wait) { tStep.wait = false; tStep.t0 = Date.now(); send(tStep.text); tStep.m = msgs[msgs.length - 1]; tLog(tStep.code + ' sent after the camera'); testLabel(); return }
   if (tCountTimer) { clearInterval(tCountTimer); tCountTimer = null; line('Test start cancelled.', 4000); testLabel(); return }
   if (tRun) { tPause = !tPause; testLabel(); return }
-  if (i >= L.length) { i = 0; store.set('lc.test.i', 0) }
-  if (i === 0) store.set('lc.test.res', {})
+  if (i >= L.length) { i = 0; store.set(TK('lc.test.i'), 0) }
+  if (i === 0) store.set(TK('lc.test.res'), {})
   tCount = T_COUNT; testLabel(); line('Put the phone in its stand: the test starts in ' + T_COUNT + ' s.', 4000)
   tCountTimer = setInterval(() => { tCount--; if (tCount > 0) { testLabel(); return }
     clearInterval(tCountTimer); tCountTimer = null
@@ -720,7 +728,7 @@ function testTap(){ const L = myTests(); let i = testPos(L);
 // Only copies that came after this test sent (the same text from an earlier run doesn't count).
 // Nov 2: the sent message gone (stopped by the person) = no copy counts (indexOf -1 used to search the whole chat: false ok).
 const copyOf = (text, m0) => msgs.indexOf(m0) >= 0 && msgs.slice(msgs.indexOf(m0)).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
-function startTest(){ const [code, kind, text, ask] = myTests()[store.get('lc.test.i', 0)];
+function startTest(){ const [code, kind, text, ask] = myTests()[store.get(TK('lc.test.i'), 0)];
   tStep = { code, kind, t0: Date.now(), phase: 0 };
   if (kind === 'hand') { tStep.text = text; tStep.wait = true; line(ask, 600000); tLog(code + ' waiting for the person (handheld)'); return }
   if (kind === 'cam') { tStep.text = text; tStep.wait = true; line(code + ': open the Camera app for about 5 s, come back here, then tap TEST.', 600000); tLog(code + ' waiting for the camera step'); return }
@@ -736,10 +744,10 @@ const resText = r => { if (!r) return '-'; const [v, t] = String(r).split(' @');
 function endTest(result){ const L = myTests(), sec = Math.round((Date.now() - tStep.t0) / 1000); tLog(tStep.code + ' ' + result + ' after ' + sec + ' s');
   if (tStep.kind === 'beacon') LC.beacon(tStep.prev);
   // Oct 29: one summary line per phone at the end (reading results = one line, not the whole file).
-  const res = store.get('lc.test.res', {}); res[tStep.code] = (/^done/.test(result) ? 'ok ' : 'NO ') + sec + 's' + ' @' + Date.now(); store.set('lc.test.res', res);
+  const res = store.get(TK('lc.test.res'), {}); res[tStep.code] = (/^done/.test(result) ? 'ok ' : 'NO ') + sec + 's' + ' @' + Date.now(); store.set(TK('lc.test.res'), res);
   line('Test ' + tStep.code + ': ' + result + '.', 6000);
-  store.set('lc.test.i', store.get('lc.test.i', 0) + 1); tStep = null;
-  if (tPause || store.get('lc.test.i', 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) { const res = store.get('lc.test.res', {}), sum = L.map(t => t[0] + ' ' + resText(res[t[0]])).join(', ');
+  store.set(TK('lc.test.i'), store.get(TK('lc.test.i'), 0) + 1); tStep = null;
+  if (tPause || store.get(TK('lc.test.i'), 0) >= L.length) { tRun = false; tLog(tPause ? 'paused' : 'all done'); if (!tPause) { const res = store.get(TK('lc.test.res'), {}), sum = L.map(t => t[0] + ' ' + resText(res[t[0]])).join(', ');
       tLog('SUMMARY ' + sum); line('All tests on this phone done: ' + sum, 60000) } testLabel(); return }
   setTimeout(() => { if (tRun && !tStep && cur) { startTest(); testLabel() } }, 5000); testLabel() }
 function testTick(){ if (!tStep || tStep.wait || tStep.hold) return; const s = tStep, m = s.m, age = (Date.now() - s.t0) / 1000;

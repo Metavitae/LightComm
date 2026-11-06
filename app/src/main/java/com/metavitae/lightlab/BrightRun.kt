@@ -448,6 +448,9 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     fun newest(): Double = synchronized(lock) { if (count == 0L) 0.0 else times[((count - 1) % CAP).toInt()] }
 
     private var dec = BrightDecoder(pass, exp0)
+    /** Nov 6: add the follow-the-spot series (SpotTrack) when reading. */
+    @Volatile var followSpot = true
+    @Volatile var spotUsed = 0
 
     /** Look for new sends and read the ones that are complete. Returns lines to log. */
     fun scan(): List<String> {
@@ -491,13 +494,17 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         }
         val short = t0.third
         val c = starts.filter { it.third == short && kotlin.math.abs(it.first - t0.first) < 0.05 }.maxOf { it.second }
-        val all = window(t0.first - 0.5, now) + fineWindow(t0.first - 0.5, now, fz)
+        val blocksW = window(t0.first - 0.5, now)
+        // Nov 6: plus one series that follows the light if a hand moves it (SpotTrack); it comes last, after the fine squares.
+        val all = blocksW + fineWindow(t0.first - 0.5, now, fz) + listOfNotNull(if (followSpot) SpotTrack.follow(blocksW.subList(0, NB * NC)) else null)
+        val spotCh = NCH + fz.size
         val r = dec.decode(all, t0.first, c, if (short) link else null)
+        if (r.blocks.contains(spotCh)) spotUsed++
         val headerDone = t0.first + (if (short) shortLen + BrightFormat.SHORT_HDR_SYMS.toDouble() / BrightFormat.RATES.last()
                                      else syncLen + BrightFormat.HDR_SYMS.toDouble() / BrightFormat.RATES.last()) + 1.0
         hearing = true
         if (r.mode != null && r.endT > now) {   // header read, rest still coming
-            val blocks = r.blocks.filter { it < NCH }; val zones = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }
+            val blocks = r.blocks.filter { it < NCH }; val zones = r.blocks.filter { it in NCH until spotCh }.map { fz[it - NCH] }
             val p0 = Pend(t0.first, r.endT, blocks, zones, emptyList(), max(1.5, 24 * r.mode.symSec))
             val sw = pendSeries(p0, t0.first, now).map { spread(it.y) }
             pending = Pend(t0.first, r.endT, blocks, zones, sw, p0.quietSec)
@@ -507,15 +514,15 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         hearing = false; pending = null
         scanFrom = if (r.mode != null) r.endT - 0.2 else t0.first + 1.0
         if (r.ok) {
-            known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it >= NCH }.map { fz[it - NCH] }.take(6)
+            known = r.blocks.filter { it < NB * NC }.take(6); knownFine = r.blocks.filter { it in NCH until spotCh }.map { fz[it - NCH] }.take(6)
             val bw = window(t0.first, r.endT); val fw = fineWindow(t0.first, r.endT, knownFine)
             knownSwing = (known.associateWith { spread(bw[it].y) } + knownFine.indices.associate { NCH + knownFine[it] to spread(fw[it].y) })
                 .filterValues { it >= 1.0 }.entries.sortedByDescending { it.value }.take(4).associate { it.key to it.value }
         }
         val line = logLine(r) + (missRecording(r)?.let { "# brightness recording of this miss saved: $it\n" } ?: "")
         heard.add(r)
-        val nFine = r.blocks.count { it >= NCH }
-        return listOf(line) + (if (r.mode != null) listOf("# channels used: ${r.blocks.size - nFine} blocks, $nFine fine squares\n") else emptyList())
+        val nFine = r.blocks.count { it in NCH until spotCh }; val spot = spotCh in r.blocks
+        return listOf(line) + (if (r.mode != null) listOf("# channels used: ${r.blocks.size - nFine - (if (spot) 1 else 0)} blocks, $nFine fine squares${if (spot) ", the follow-the-spot series" else ""}\n") else emptyList())
     }
 
     /** If a short reply is expected: look for it on the whole picture, the liveliest blocks and the known ones. */

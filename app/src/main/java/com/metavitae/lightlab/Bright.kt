@@ -1008,3 +1008,57 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         }
     }
 }
+
+/**
+ * Nov 6 (founder: "it would be great not to need a tripod"). On tripods the long message got through at 45 steps; held in
+ * hand (Nov 2) it never did. The reader picks its camera zones at the opening and keeps them, so light that a hand moves
+ * into another zone is lost. This makes one extra series that follows the light, picture by picture: each zone's light
+ * above its own darkest moment nearby (= what the flashlight adds), weighted by how much light that zone got in the last
+ * ~2 s. The reader treats it like any other zone (it wins only when it reads better).
+ */
+object SpotTrack {
+    /** Half-window in pictures (30 = 1 s each side): longer than any steady stretch inside a message. */
+    @JvmField var HALF = 30
+    /** At most this many zones are added up at a time. */
+    @JvmField var TOP = 6
+
+    fun follow(blocks: List<BrightDecoder.Series>): BrightDecoder.Series? {
+        if (blocks.isEmpty()) return null
+        val n = blocks[0].y.size
+        if (n < 2 * HALF + 2 || blocks.any { it.y.size != n }) return null
+        val z = blocks.size
+        val ex = Array(z) { DoubleArray(n) }
+        val act = Array(z) { DoubleArray(n) }
+        for (i in 0 until z) {
+            val y = blocks[i].y
+            val lo = slidingMin(y, HALF)
+            for (k in 0 until n) ex[i][k] = y[k] - lo[k]
+            val pre = DoubleArray(n + 1); for (k in 0 until n) pre[k + 1] = pre[k] + ex[i][k]
+            for (k in 0 until n) { val a = max(0, k - HALF); val b = min(n, k + HALF + 1); act[i][k] = (pre[b] - pre[a]) / (b - a) }
+        }
+        val out = DoubleArray(n)
+        val col = DoubleArray(z)
+        val idx = (0 until z).toMutableList()
+        for (k in 0 until n) {
+            for (i in 0 until z) col[i] = act[i][k]
+            val mid = col.sortedArray()[z / 2]
+            idx.sortByDescending { col[it] }
+            var sw = 0.0; var s = 0.0
+            for (j in 0 until min(TOP, z)) { val i = idx[j]; val w = col[i] - mid; if (w <= 0) break; sw += w; s += w * ex[i][k] }
+            out[k] = if (sw > 0) s / sw else 0.0
+        }
+        return BrightDecoder.Series(blocks[0].t, out)
+    }
+
+    /** Darkest value within ±h pictures (a deque, one pass). */
+    fun slidingMin(y: DoubleArray, h: Int): DoubleArray {
+        val n = y.size; val out = DoubleArray(n); val dq = java.util.ArrayDeque<Int>()
+        var r = 0
+        for (k in 0 until n) {
+            while (r < n && r <= k + h) { while (dq.isNotEmpty() && y[dq.peekLast()] >= y[r]) dq.pollLast(); dq.addLast(r); r++ }
+            while (dq.peekFirst() < k - h) dq.pollFirst()
+            out[k] = y[dq.peekFirst()]
+        }
+        return out
+    }
+}

@@ -2,6 +2,7 @@ package com.metavitae.lightlab
 
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -41,6 +42,12 @@ object BrightSim {
     @JvmField var patchWidth = 3.0      // how wide our light's glow is, in blocks
     @JvmField var ppm = 0.0             // sender clock faster than the receiver's, parts per million
     @JvmField var personAt = -1.0       // seconds into the send when someone walks past (-1 = nobody)
+    // Nov 6: a phone held in hand. The light's spot slowly wanders this many blocks over the send (a random direction),
+    // and shakes this many blocks back and forth (about 3 times a second).
+    @JvmField var wander = 0.0
+    @JvmField var shake = 0.0
+    /** The reader also gets the follow-the-spot series (SpotTrack). */
+    @JvmField var follow = false
     @JvmField var decExpFollows = false // the reader is told the real exposure (glare setting, Oct 14)
 
     data class Outcome(val ok: Boolean, val bitErrors: Int, val bits: Int, val stage: String, val seconds: Double)
@@ -80,7 +87,8 @@ object BrightSim {
             if (state) sum += max(0.0, b - max(last, a))
             return sum
         }
-        val ss = film(::lightOn, lead, lead + send.wave.end + 1.0, cam, room, r, snrScale)
+        val ss0 = film(::lightOn, lead, lead + send.wave.end + 1.0, cam, room, r, snrScale)
+        val ss = if (follow) ss0 + listOfNotNull(SpotTrack.follow(ss0.subList(0, ss0.size - 1))) else ss0
         if (verbose) { BrightDecoder.debugHdr = IntArray(BrightFormat.HDR_SYMS) { k -> if (send.wave.on[BrightFormat.SYNC_SLOTS + k] > 0) 1 else 0 }; BrightDecoder.debugRate = mode.perSec
             println("  shadow from ${personAt} s; header runs ${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS])}..${"%.1f".format(send.wave.start[BrightFormat.SYNC_SLOTS + BrightFormat.HDR_SYMS])} s") }
         val dec = BrightDecoder(pass, if (decExpFollows) realExp else 0.0325)
@@ -103,7 +111,13 @@ object BrightSim {
         val phase = r.nextDouble() / cam.fps
         val nFrames = ((total - phase) * cam.fps).toInt()
         val pr = 2 + r.nextInt(6); val pc = 1 + r.nextInt(5)   // patch centre
-        val gains = DoubleArray(nb * nc) { i -> val b = i / nc; val c = i % nc; exp(-((b - pr) * (b - pr) / (8.0 * patchWidth / 3) + (c - pc) * (c - pc) / (3.0 * patchWidth / 3))) }
+        // Drawn only for a moving spot, so the other tests keep their exact random numbers.
+        val moving = wander != 0.0 || shake != 0.0
+        val ang = if (moving) r.nextDouble() * 2 * PI else 0.0; val ph = if (moving) r.nextDouble() * 2 * PI else 0.0
+        fun gainsAt(ts: Double): DoubleArray { val u = ts / total
+            val cr = pr + wander * u * cos(ang) + shake * sin(2 * PI * 3.1 * ts + ph); val cc = pc + wander * u * sin(ang) + shake * sin(2 * PI * 2.3 * ts + 2 * ph)
+            return DoubleArray(nb * nc) { i -> val b = i / nc; val c = i % nc; exp(-((b - cr) * (b - cr) / (8.0 * patchWidth / 3) + (c - cc) * (c - cc) / (3.0 * patchWidth / 3))) } }
+        var gains = gainsAt(0.0)
         val swing = 10.0
         val sigma = swing / (room.swingOverNoise * snrScale)
         val bg = DoubleArray(nb * nc) { swing * room.bgOverSwing * (0.7 + 0.6 * r.nextDouble()) }
@@ -113,6 +127,7 @@ object BrightSim {
         for (f in 0 until nFrames) {
             val ts = phase + f / cam.fps
             times[f] = ts
+            if (moving) gains = gainsAt(ts)
             var whole = 0.0
             for (b in 0 until nb) {
                 val a = ts + cam.skew * (b + 0.5) / nb
