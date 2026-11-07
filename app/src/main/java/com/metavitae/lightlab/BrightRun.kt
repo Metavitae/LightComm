@@ -233,6 +233,10 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     }
 
     private val times = DoubleArray(CAP)
+    /** Nov 7: how much the phone moved in each picture (MotionCheck share), and the picture before. */
+    private val motion = FloatArray(CAP)
+    private var prevFine: FloatArray? = null
+    @Volatile var movedPictures = 0L
     private val vals = Array(CAP) { FloatArray(NCH) }
     /** Fine squares, brightness x 100 (compact: 32 x 24 x 4500 pictures is about 7 MB). */
     private val fineVals = Array(CAP) { ShortArray(FX * FY) }
@@ -326,6 +330,9 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         synchronized(lock) {
             val k = (count % CAP).toInt()
             times[k] = tsNs / 1e9
+            motion[k] = MotionCheck.share(fine, prevFine)
+            if (motion[k] >= MotionCheck.MOVING) movedPictures++
+            prevFine = fine.copyOf()
             val v = vals[k]
             java.util.Arrays.fill(v, 0f)
             for (y in 0 until zy) {
@@ -375,7 +382,22 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
         val idx = ArrayList<Int>()
         for (j in 0 until n) { val k = ((first + j) % CAP).toInt(); if (times[k] in a..b) idx.add(k) }
         val t = DoubleArray(idx.size) { times[idx[it]] }
-        List(NCH) { ch -> BrightDecoder.Series(t, DoubleArray(idx.size) { vals[idx[it]][ch].toDouble() }) }
+        val bad = badMarks(idx.toIntArray())
+        List(NCH) { ch -> BrightDecoder.Series(t, DoubleArray(idx.size) { vals[idx[it]][ch].toDouble() }, bad) }
+    }
+
+    /** Pictures taken while the phone moved, plus one on each side (smeared). Null when none. Call inside the lock. */
+    private fun badMarks(idx: IntArray): BooleanArray? {
+        val m = BooleanArray(idx.size) { motion[idx[it]] >= MotionCheck.MOVING }
+        if (!m.any { it }) return null
+        val out = m.copyOf(); for (i in m.indices) if (m[i]) { if (i > 0) out[i - 1] = true; if (i + 1 < m.size) out[i + 1] = true }
+        return out
+    }
+    /** The phone moved in the last half second (for the "Hold still" line). */
+    fun moving(): Boolean = synchronized(lock) {
+        if (count == 0L) return false
+        val now = times[((count - 1) % CAP).toInt()]
+        indexes(now - 0.5, now).any { motion[it] >= MotionCheck.MOVING }
     }
 
     /** Pictures (ring indexes) from time a to b. Call inside the lock. */
@@ -391,7 +413,8 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
     private fun fineWindow(a: Double, b: Double, zones: List<Int>): List<BrightDecoder.Series> = synchronized(lock) {
         val idx = indexes(a, b)
         val t = DoubleArray(idx.size) { times[idx[it]] }
-        zones.map { z -> BrightDecoder.Series(t, DoubleArray(idx.size) { fineVals[idx[it]][z] / 100.0 }) }
+        val bad = badMarks(idx)
+        zones.map { z -> BrightDecoder.Series(t, DoubleArray(idx.size) { fineVals[idx[it]][z] / 100.0 }, bad) }
     }
 
     /**
@@ -594,7 +617,7 @@ class BrightListener(private val ctx: Context, private val pass: String, exp0: D
             val exp = if (r.ok) texts.firstOrNull { it == r.text } else texts.firstOrNull { bytesOf(it).size == r.len }
             if (exp != null) {
                 expectedText = exp
-                val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce)
+                val e = BrightFormat.bodyBits(bytesOf(exp), pass, r.nonce, r.packed)
                     .takeIf { it.size == r.coded.size } ?: r.coded
                 bitErr = e.indices.count { e[it] != r.coded[it] }
                 val sym = BrightFormat.withPilots(BrightFormat.bitsToSymbols(e, mode), mode).first

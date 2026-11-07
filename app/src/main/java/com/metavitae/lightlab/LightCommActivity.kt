@@ -263,6 +263,7 @@ class LightCommActivity : Activity() {
                 o.put("live", JSONArray(rx.liveliness().map { it.toDouble() }))
                 o.put("orient", t.sensorOrientation)
                 if (rx.readyAt > 0) o.put("bg", rx.background()).put("top", rx.brightTop())
+                o.put("moving", rx.moving())   // Nov 7: "Hold still" line
             }
             return o.toString()
         }

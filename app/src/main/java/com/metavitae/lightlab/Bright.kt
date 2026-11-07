@@ -24,7 +24,8 @@ import kotlin.math.sqrt
  *   after every 32 symbols | dark tail.
  * Start mark and header are on/off only, at the text's speed (30, 15 or 10 symbols per second).
  * Header: stamp 16 | nonce 16 | mode 4 (top bit = packed text) | phone tag 4 | shortest pulse (ms) 4 | length 8 | header check byte 8 (Hamming 7/4, interleaved).
- * Text: packed (TextPack, when shorter) or UTF-8 bytes + 16-bit check (CRC-16), scrambled with the passphrase, Hamming 7/4, interleaved.
+ * Text (Nov 7): packed (TextPack, when shorter) or UTF-8 bytes, AES-256-CTR encrypted + 4-byte seal (HMAC-SHA256), keys from the
+ * key words (LcKeys), Hamming 7/4, interleaved. Stamp, length byte, follow-up nonces, got-it and beacon patterns use the stretched key too.
  */
 object BrightFormat {
     const val SLOT = 1.0 / 30
@@ -165,12 +166,12 @@ object BrightFormat {
 
     fun headerBits(pass: String, nonce: Int, mode: Mode, tag: Int, pminMs: Int, len: Int, packed: Boolean = false): IntArray {
         val b = ArrayList<Int>()
-        bitsOf(MessageFormat.tag(pass, nonce), 16, b)
+        bitsOf(MessageFormat.tag(LcKeys.secret(pass), nonce), 16, b)
         bitsOf(nonce, 16, b)
         bitsOf(mode.id or (if (packed) 8 else 0), 4, b)
         bitsOf(tag, 4, b)
         bitsOf(pminMs, 4, b)
-        bitsOf(len xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff), 8, b)
+        bitsOf(len xor (MessageFormat.keystream(LcKeys.secret(pass), nonce, 1)[0].toInt() and 0xff), 8, b)
         bitsOf(headerCheck(b), 8, b)
         return interleave(hamming(b))
     }
@@ -189,12 +190,12 @@ object BrightFormat {
      */
     data class Link(val id: Int, val tag: Int, val pminMs: Int, val lastSeq: Int)
     fun seqNonce(pass: String, linkId: Int, seq: Int): Int {
-        val k = MessageFormat.keystream("$pass/link/$seq", linkId, 2)
+        val k = MessageFormat.keystream("${LcKeys.secret(pass)}/link/$seq", linkId, 2)
         return ((k[0].toInt() and 0xff) shl 8) or (k[1].toInt() and 0xff)
     }
     /** Short header's 12-bit check: over nonce, mode and length, plus the passphrase stamp (a stranger can't make it). */
     fun shortCheck(pass: String, nonce: Int, modeNibble: Int, len: Int): Int {
-        val st = MessageFormat.tag(pass, nonce)
+        val st = MessageFormat.tag(LcKeys.secret(pass), nonce)
         return 0xFFF and crc16(byteArrayOf((nonce shr 8).toByte(), nonce.toByte(), modeNibble.toByte(), len.toByte(), (st shr 8).toByte(), st.toByte()))
     }
     fun shortHeaderBits(pass: String, nonce: Int, mode: Mode, len: Int, packed: Boolean): IntArray {
@@ -214,18 +215,20 @@ object BrightFormat {
         return c
     }
 
-    /** Coded (protected, interleaved) text bits, before they become symbols. */
-    fun bodyBits(data: ByteArray, pass: String, nonce: Int): IntArray {
-        val ks = MessageFormat.keystream(pass, nonce, data.size + 3)
+    /** Coded (protected, interleaved) text bits, before they become symbols.
+     *  Nov 7 (founder, encryption route A): the text is AES-256 encrypted with keys made from the chat's key words
+     *  (LcKeys), followed by a 4-byte seal (HMAC-SHA256) in place of the old 2-byte check. The seal also starts the
+     *  scramble (SIV style), so a repeated 16-bit nonce no longer repeats the scramble, and nothing else is sent. */
+    fun bodyBits(data: ByteArray, pass: String, nonce: Int, packed: Boolean = false): IntArray {
+        val seal = LcKeys.seal(pass, nonce, packed, data)
+        val c = LcKeys.crypt(pass, nonce, seal, data)
         val b = ArrayList<Int>()
-        data.forEachIndexed { i, x -> bitsOf((x.toInt() xor ks[i + 1].toInt()) and 0xff, 8, b) }
-        val crc = crc16(data)
-        bitsOf(((crc shr 8) xor ks[data.size + 1].toInt()) and 0xff, 8, b)
-        bitsOf((crc xor ks[data.size + 2].toInt()) and 0xff, 8, b)
+        for (x in c) bitsOf(x.toInt() and 0xff, 8, b)
+        for (x in seal) bitsOf(x.toInt() and 0xff, 8, b)
         return interleave(hamming(b))
     }
 
-    fun codedBodyBitCount(len: Int) = (len + 2) * 14
+    fun codedBodyBitCount(len: Int) = (len + LcKeys.SEAL) * 14
     fun dataSymbolCount(len: Int, mode: Mode) = ceil(codedBodyBitCount(len).toDouble() / mode.bits).toInt() * mode.group
 
     /** Data symbols with pilots inserted; returns (symbols, isPilot). */
@@ -371,7 +374,7 @@ object BrightFormat {
         val n = replySlots(perSec)
         var fallback: IntArray? = null
         for (k in 0 until 16) {
-            val ks = MessageFormat.keystream("$pass/reply/$k", nonce * 2 + (if (ok) 1 else 0), 8)
+            val ks = MessageFormat.keystream("${LcKeys.secret(pass)}/reply/$k", nonce * 2 + (if (ok) 1 else 0), 8)
             val p = IntArray(n) { (ks[it / 8].toInt() shr (7 - it % 8)) and 1 }
             if (fallback == null) fallback = p
             val ones = p.sum()
@@ -415,7 +418,7 @@ object BrightFormat {
         val n = BEACON_SLOTS
         var best: IntArray? = null; var bestScore = 9.0
         for (c in 0 until 64) {
-            val ks = MessageFormat.keystream("$pass/beacon/$c", 0, 8)
+            val ks = MessageFormat.keystream("${LcKeys.secret(pass)}/beacon/$c", 0, 8)
             val p = IntArray(n) { (ks[it / 8].toInt() shr (7 - it % 8)) and 1 }
             var run = 1; var longest = 1
             for (i in 1 until n) { run = if (p[i] == p[i - 1]) run + 1 else 1; longest = maxOf(longest, run) }
@@ -446,7 +449,7 @@ object BrightFormat {
     class Send(val wave: Wave, val layout: Layout, val bodySyms: IntArray, val bodyCoded: IntArray, val pminMs: Int, val nonce: Int)
 
     /**
-     * Nov 7 (Faro's review: "measure the wrong-text risk"): the 16-bit check lets about 1 damaged read in 65,000 through,
+     * Nov 7 (Faro's review: "measure the wrong-text risk"): the old 16-bit check let about 1 damaged read in 65,000 through (now a 4-byte seal),
      * and a far read tries up to 6 repairs per try, so a wrong text was possible (sim: 1 in ~3,500 messages when almost
      * every try fails). Second guard, nothing added to the light: the text must be one the sending phone could have made.
      * Packed: it unpacks AND packs back to exactly these bytes. Plain: strict UTF-8. Both: only characters a person can
@@ -508,7 +511,7 @@ object BrightFormat {
         val hdr = if (short) shortHeaderBits(pass, n, mode, data.size, packed != null) else headerBits(pass, n, mode, tag, pminMs, data.size, packed != null)
         for (b in (if (short) SHORT_BARKER else BARKER) + hdr) w.add(ts, if (b == 1) ts else 0.0)
         for (l in trainSymbols(mode)) w.add(ts, mode.onSec(l, pmin))
-        val coded = bodyBits(data, pass, n)
+        val coded = bodyBits(data, pass, n, packed != null)
         val (body, _) = withPilots(bitsToSymbols(coded, mode), mode)
         check(body.size == lay.bodySyms)
         for (l in body) w.add(ts, mode.onSec(l, pmin))
@@ -539,7 +542,8 @@ object BrightFormat {
 class BrightDecoder(private val pass: String, private val expSec: Double) {
 
     /** One picture series per channel: times (s, receiver clock, start of exposure) and brightness. */
-    class Series(val t: DoubleArray, val y: DoubleArray)
+    /** bad (Nov 7): pictures taken while the phone moved (MotionCheck). The reader treats them as unknown, not as light. */
+    class Series(val t: DoubleArray, val y: DoubleArray, val bad: BooleanArray? = null)
 
     data class Result(
         val ok: Boolean, val stage: String, val text: String = "", val mode: BrightFormat.Mode? = null,
@@ -653,7 +657,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         while (i < s.t.size) {
             val a = s.t[i] - c.t0
             if (a + expSec > knownUntil) break
-            if (a >= 0) {
+            if (a >= 0 && s.bad?.get(i) != true) {
                 val x = w.light(a, a + expSec) / expSec
                 val y = drift?.fix(i, s.y[i]) ?: s.y[i]
                 val p = x.coerceIn(0.0, 1.0) * 8; val k = min(7, floor(p).toInt()); val u = p - k
@@ -692,7 +696,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             while (i < s.t.size) {
                 val a = s.t[i] - c.t0; val b = a + expSec
                 if (a >= runEnd) break
-                if (b > runStart && (tailKnown || b <= runEnd)) {
+                if (b > runStart && (tailKnown || b <= runEnd) && s.bad?.get(i) != true) {
                     val j = (w.at(b - 1e-9) - first).coerceIn(0, n - 1)
                     val cs = w.start[first + j]
                     val cu0 = max(a, cs) - cs; val cu1 = min(b, cs + w.dur[first + j]) - cs
@@ -854,8 +858,8 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                 return false
             }
             val stamp = bitsInt(bits, 0, 16); val nonce = bitsInt(bits, 16, 16)
-            val l = bitsInt(bits, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
-            return stamp == MessageFormat.tag(pass, nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52)) && sane(bitsInt(bits, 33, 3), l, tryRate)
+            val l = bitsInt(bits, 44, 8) xor (MessageFormat.keystream(LcKeys.secret(pass), nonce, 1)[0].toInt() and 0xff)
+            return stamp == MessageFormat.tag(LcKeys.secret(pass), nonce) && bitsInt(bits, 52, 8) == BrightFormat.headerCheck(bits.take(52)) && sane(bitsInt(bits, 33, 3), l, tryRate)
         }
         rates@ for (tryRate in BrightFormat.RATES) {
             val ts = 1.0 / tryRate
@@ -897,7 +901,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             packed = bitsInt(hdr, 32, 1) == 1
             tag = bitsInt(hdr, 36, 4)
             pminMs = bitsInt(hdr, 40, 4)
-            len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(pass, nonce, 1)[0].toInt() and 0xff)
+            len = bitsInt(hdr, 44, 8) xor (MessageFormat.keystream(LcKeys.secret(pass), nonce, 1)[0].toInt() and 0xff)
         }
         val mode = BrightFormat.MODES.getOrNull(modeId)
         if (mode == null || mode.perSec != rate || len !in 1..BrightFormat.MAX_BYTES)
@@ -920,13 +924,17 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
         // Shadow check (Oct 19 measurement, nothing changes on the wire): the first text a shorter check
         // (the top 8 or 12 bits of today's 16) would have let through. Differs from the real result = a wrong text it would have shown.
         val shadow = arrayOfNulls<String>(2); val shadowBits = intArrayOf(8, 12)
-        val ks = MessageFormat.keystream(pass, nonce, len + 3)
-        /** Text from soft bits, or null when the check bytes say it's wrong. */
+        /** Nov 7: decrypt with the seal that came, and count how many leading bits of it are right (32 = sealed). */
+        fun open(plain: IntArray): Pair<ByteArray, Int> {
+            val c = ByteArray(len) { bitsInt(plain, it * 8, 8).toByte() }
+            val seal = ByteArray(LcKeys.SEAL) { bitsInt(plain, (len + it) * 8, 8).toByte() }
+            val bytes = LcKeys.crypt(pass, nonce, seal, c)
+            return bytes to LcKeys.sameBits(seal, LcKeys.seal(pass, nonce, packed, bytes))
+        }
+        /** Text from soft bits, or null when the seal says it's wrong. */
         fun fromLlr(llr: DoubleArray): String? {
-            val plain = BrightFormat.softDecode(llr)
-            val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
-            val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
-            return if (crc == BrightFormat.crc16(bytes)) BrightFormat.textIfPlausible(bytes, packed) else null
+            val (bytes, ok) = open(BrightFormat.softDecode(llr))
+            return if (ok == LcKeys.SEAL * 8) BrightFormat.textIfPlausible(bytes, packed) else null
         }
         val passLlr = ArrayList<DoubleArray>()
         fun read(body: IntArray): Pair<IntArray, String?> {
@@ -940,11 +948,10 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             // Soft repair (capped, so one badly timed pulse can't shout down its neighbours), then plain repair.
             for (plain in listOf(BrightFormat.softDecode(capped),
                                  BrightFormat.unhamming(BrightFormat.deinterleave(coded)))) {
-                val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
-                val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
-                for (k in 0..1) if (shadow[k] == null && crc shr (16 - shadowBits[k]) == BrightFormat.crc16(bytes) shr (16 - shadowBits[k]))
+                val (bytes, ok) = open(plain)
+                for (k in 0..1) if (shadow[k] == null && ok >= shadowBits[k])
                     (if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8))?.let { shadow[k] = it }
-                if (crc == BrightFormat.crc16(bytes)) {
+                if (ok == LcKeys.SEAL * 8) {
                     val t = BrightFormat.textIfPlausible(bytes, packed)
                     if (t != null) return coded to t
                 }
@@ -1061,19 +1068,31 @@ object SpotTrack {
     /** At most this many zones are added up at a time. */
     @JvmField var TOP = 6
 
+    /** Nov 7 (founder: "make sure it goes along with follow the spot"): around pictures where the phone moved
+     *  (the blocks' bad marks), the spot is looked for over SHORT pictures, not HALF: after a jerk it is found again
+     *  within a few pictures instead of up to a second later. */
+    @JvmField var SHORT = 4
+
     fun follow(blocks: List<BrightDecoder.Series>): BrightDecoder.Series? {
         if (blocks.isEmpty()) return null
         val n = blocks[0].y.size
         if (n < 2 * HALF + 2 || blocks.any { it.y.size != n }) return null
         val z = blocks.size
+        val bad = blocks[0].bad
+        // pictures within HALF of a moving picture use the short window
+        val near = BooleanArray(n)
+        if (bad != null) { var last = -1_000_000; for (k in 0 until n) { if (bad[k]) last = k; if (k - last <= HALF) near[k] = true }
+            last = 1_000_000; for (k in n - 1 downTo 0) { if (bad[k]) last = k; if (last - k <= HALF) near[k] = true } }
+        val anyNear = near.any { it }
         val ex = Array(z) { DoubleArray(n) }
         val act = Array(z) { DoubleArray(n) }
         for (i in 0 until z) {
             val y = blocks[i].y
             val lo = slidingMin(y, HALF)
-            for (k in 0 until n) ex[i][k] = y[k] - lo[k]
+            val loS = if (anyNear) slidingMin(y, SHORT) else lo
+            for (k in 0 until n) ex[i][k] = y[k] - (if (near[k]) loS[k] else lo[k])
             val pre = DoubleArray(n + 1); for (k in 0 until n) pre[k + 1] = pre[k] + ex[i][k]
-            for (k in 0 until n) { val a = max(0, k - HALF); val b = min(n, k + HALF + 1); act[i][k] = (pre[b] - pre[a]) / (b - a) }
+            for (k in 0 until n) { val h = if (near[k]) SHORT else HALF; val a = max(0, k - h); val b = min(n, k + h + 1); act[i][k] = (pre[b] - pre[a]) / (b - a) }
         }
         val out = DoubleArray(n)
         val col = DoubleArray(z)
@@ -1086,7 +1105,7 @@ object SpotTrack {
             for (j in 0 until min(TOP, z)) { val i = idx[j]; val w = col[i] - mid; if (w <= 0) break; sw += w; s += w * ex[i][k] }
             out[k] = if (sw > 0) s / sw else 0.0
         }
-        return BrightDecoder.Series(blocks[0].t, out)
+        return BrightDecoder.Series(blocks[0].t, out, bad)
     }
 
     /** Darkest value within ±h pictures (a deque, one pass). */
@@ -1099,5 +1118,81 @@ object SpotTrack {
             out[k] = y[dq.peekFirst()]
         }
         return out
+    }
+}
+
+/**
+ * Nov 7 (founder picked encryption route A after Faro's review and the MorseLightCrypt check).
+ * Keys come from the chat's key words through PBKDF2-HMAC-SHA256 (slow on purpose: guessing key words from
+ * recorded light now costs this much per guess), once per key words, kept in memory.
+ * - enc key (32 bytes): AES-256-CTR over the text.
+ * - mac key (32 bytes): the 4-byte seal, HMAC-SHA256 over nonce, packed flag, length and text. The seal is sent
+ *   after the text and starts the AES counter (SIV style): the same nonce with a different text never reuses a scramble.
+ * - secret(): the stretched key as a string, for everything else that used the key words directly (header stamp,
+ *   length byte, follow-up nonces, got-it and beacon patterns), so none of them can be used to test guesses quickly.
+ * Built into Android (javax.crypto): no library. Changing ROUNDS, SALT or the layout makes older builds unreadable.
+ */
+object LcKeys {
+    const val SEAL = 4
+    @JvmField var ROUNDS = 120_000
+    private const val SALT = "lightcomm/v2/keys"
+    private val cache = HashMap<String, ByteArray>()
+
+    fun keys(pass: String): ByteArray = synchronized(cache) {
+        val p = MessageFormat.norm(pass)
+        cache.getOrPut("$ROUNDS|$p") {
+            val spec = javax.crypto.spec.PBEKeySpec(p.toCharArray(), SALT.toByteArray(), ROUNDS, 80 * 8)
+            javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        }
+    }
+    private val secrets = HashMap<String, String>()
+    /** Called for every header the reader tries: kept, not rebuilt. */
+    fun secret(pass: String): String = synchronized(secrets) { secrets.getOrPut("$ROUNDS|$pass") { keys(pass).copyOfRange(64, 80).joinToString("") { String.format("%02X", it) } } }
+
+    fun seal(pass: String, nonce: Int, packed: Boolean, data: ByteArray): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(keys(pass).copyOfRange(32, 64), "HmacSHA256"))
+        mac.update(byteArrayOf('L'.code.toByte(), 'C'.code.toByte(), '2'.code.toByte(), (nonce shr 8).toByte(), nonce.toByte(), (if (packed) 1 else 0).toByte(), data.size.toByte()))
+        mac.update(data)
+        return mac.doFinal().copyOf(SEAL)
+    }
+    /** Same call both ways (CTR). */
+    fun crypt(pass: String, nonce: Int, seal: ByteArray, data: ByteArray): ByteArray {
+        if (data.isEmpty()) return data
+        val iv = ByteArray(16); seal.copyInto(iv, 0); iv[SEAL] = (nonce shr 8).toByte(); iv[SEAL + 1] = nonce.toByte()
+        val c = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding")
+        c.init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec(keys(pass).copyOfRange(0, 32), "AES"), javax.crypto.spec.IvParameterSpec(iv))
+        return c.doFinal(data)
+    }
+    /** How many leading bits two seals share (32 = the same). */
+    fun sameBits(a: ByteArray, b: ByteArray): Int {
+        for (i in a.indices) { val x = (a[i].toInt() xor b[i].toInt()) and 0xff; if (x != 0) return i * 8 + Integer.numberOfLeadingZeros(x) - 24 }
+        return a.size * 8
+    }
+}
+
+/**
+ * Nov 7 (idea from MorseLightCrypt's FrameMeter, founder: build it, with follow-the-spot). Tells a moving phone from
+ * a blinking light, picture by picture: when a light blinks, the squares it reaches all brighten (or all darken)
+ * together; when the phone moves, edges slide across the picture and some squares brighten while others darken in
+ * the same picture. Share of squares that moved both ways = how much the phone moved.
+ * Unlike that app (it stops and starts again; fine for Morse), LightComm keeps reading: moving pictures are marked
+ * bad and count as unknown in the reader, so the repair code fills them in, and follow-the-spot looks again at once.
+ */
+object MotionCheck {
+    /** Brightness change of one square between pictures that counts as a move. */
+    @JvmField var STEP = 16f
+    /** Share of squares moving both ways at once = the phone moved (this picture is not trusted). */
+    @JvmField var MOVING = 0.06f
+    /** One side may outnumber the other at most this much for it to be motion (a lamp is lopsided). */
+    @JvmField var BALANCE = 3
+
+    fun share(now: FloatArray, before: FloatArray?): Float {
+        if (before == null || before.size != now.size) return 0f
+        var up = 0; var down = 0
+        for (i in now.indices) { val d = now[i] - before[i]; if (d > STEP) up++ else if (d < -STEP) down++ }
+        val fewer = min(up, down)
+        if (fewer * BALANCE < max(up, down)) return 0f
+        return fewer.toFloat() / now.size
     }
 }

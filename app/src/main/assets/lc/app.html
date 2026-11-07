@@ -623,7 +623,17 @@ function msgDelete(){ const a = picked(); if (!a.length) return;
 // A message that fits in one send goes exactly as before (no tag).
 // Auto-answer copies start with "(COPY) " (founder Oct 15: in parentheses, so a typed "copy that" is still answered). Never answered: no loops.
 const COPY = /^\(COPY\) /;
-const PART = /^~([a-z])([1-9])\/([1-9]) ([\s\S]*)$/;
+const PART = /^~([a-z])([1-9])\/([1-9])([ ,])([\s\S]*)$/;
+// Nov 7 (founder, route A): parts go in a row. "~f2/7," = more parts follow (no "got it" in between);
+// "~f7/7 " = last of the batch, it gets the one "got it". Missing parts come back as "(MISS) f 2,5" and only those are resent.
+const MISS = /^\(MISS\) ([a-z]) ([1-9](?:,[1-9])*)$/;
+function resendMissing(g, list){ const ks = list.split(',').map(Number);
+  let m = null; for (let i = msgs.length - 1; i >= 0; i--) { const q = msgs[i]; if (q.dir === 'out' && q.parts && q.parts.length > 1 && q.parts[0].t.startsWith('~' + g)) { m = q; break } }
+  if (!m) return;
+  const ps = ks.map(k => m.parts[k - 1]).filter(Boolean); if (!ps.length) return;
+  ps.forEach((p, i) => { p.ok = false; p.t = p.t.replace(/^(~[a-z][1-9]\/[1-9])[ ,]/, '$1' + (i < ps.length - 1 ? ',' : ' ')); p.k = LC.send(p.t) });
+  m.state = 'pending'; m.meta = 'SENDING AGAIN · ' + ps.length + (ps.length > 1 ? ' MISSING PARTS' : ' MISSING PART'); m.k = ps[0].k; drawMsgs();
+  line('They missed ' + (ps.length > 1 ? ps.length + ' parts' : 'one part') + '. Sending ' + (ps.length > 1 ? 'those' : 'it') + ' again.', 6000) }
 // Nov 6: while the link is weak the phone asks for smaller parts (40 bytes, not 80): at 80-90 steps the long parts failed,
 // short ones got through. Never more than 9 parts: if smaller parts would make more, the part size grows again.
 function splitParts(text){ const want = LC.partBytes ? LC.partBytes() : 80; if (LC.bytes(text) <= want) return [text];
@@ -637,7 +647,7 @@ function cutParts(text, g, size){
     while (b < text.length) { let c = text.indexOf(' ', b); c = c < 0 ? text.length : c + 1; if (!fits(text.slice(a, c))) break; best = b = c }
     if (best < 0) { best = a + 1; while (best < text.length && fits(text.slice(a, best + 1))) best++ }   // one very long word: cut it
     out.push(text.slice(a, best)); a = best }
-  return out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + ' ' + t) }
+  return out.map((t, i) => '~' + g + (i + 1) + '/' + out.length + (i < out.length - 1 ? ',' : ' ') + t) }
 function enqueue(m){ m.state = 'pending'; m.meta = 'WAITING FOR A CLEAR LINE…';
   if (!m.parts) { const ps = splitParts(m.wire || m.text); if (!ps) { m.state = 'failed'; m.meta = 'TOO LONG · MAKE IT SHORTER'; drawMsgs(); return } m.parts = ps.map(t => ({ t, ok:false })) }
   m.parts.forEach(p => { if (!p.ok) p.k = LC.send(p.t) }); m.k = (m.parts.find(p => !p.ok) || {}).k; drawMsgs() }
@@ -795,7 +805,7 @@ function tick(){
         m.sec = (m.sec || 0) + e.seconds; m.tries = (m.tries || 0) + e.tries;
         if (e.ok) { p.ok = true; const done = m.parts.filter(q => q.ok).length;
           if (done === n) { m.state = ''; m.meta = 'SENT AS LIGHT · ' + Math.round(m.sec) + ' S · GOT IT' + (n > 1 ? ' · ' + n + ' PARTS' : '') + (m.tries > n ? ' · ' + m.tries + ' TRIES' : '') }
-          else m.meta = 'PART ' + done + ' OF ' + n + ' GOT IT · SENDING THE REST' }
+          else m.meta = 'PART ' + done + ' OF ' + n + (/^~[a-z][1-9]\/[1-9],/.test(p.t) ? ' SENT' : ' GOT IT') + ' · SENDING THE REST' }
         else { m.state = 'failed'; m.parts.forEach(q => { if (!q.ok && q !== p) LC.stop(q.k) });   // don't send later parts over a gap
           const done = m.parts.filter(q => q.ok).length;
           m.meta = done ? done + ' OF ' + n + ' PARTS ARRIVED · TAP TO SEND THE REST' : 'NOT DELIVERED · TAP TO SEND AGAIN' }
@@ -809,11 +819,12 @@ function tick(){
       if (pt) { const key = e.from + pt[1] + pt[3], n = +pt[3];
         let m = null; for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].dir === 'in' && msgs[i].grp === key && !msgs[i].whole) { m = msgs[i]; break }
         if (!m) { m = { dir:'in', from:whoIs(e.from), grp:key, got:{}, time:now() }; msgs.push(m) }
-        m.got[pt[2]] = pt[4]; const have = Object.keys(m.got).length;
+        m.got[pt[2]] = pt[5]; const have = Object.keys(m.got).length;
         m.text = Array.from({ length:n }, (_, i) => m.got[i + 1] !== undefined ? m.got[i + 1] : ' … ').join('');
         m.whole = have === n; m.meta = (m.whole ? 'RECEIVED · ' + n + ' PARTS · ' : 'PART ' + have + ' OF ' + n + ' · THE REST IS COMING · ') + sig; drawMsgs();
         line(m.whole ? 'Message from ' + m.from + '.' : 'Part ' + have + ' of ' + n + ' from ' + m.from + '. The rest is coming.', 5000);
         if (m.whole && auto && !cur.practice && !COPY.test(m.text)) send('(COPY) ' + m.text, true) }
+      else if (e.ok && MISS.test(e.text)) { if (!e.dup) { const mm = MISS.exec(e.text); resendMissing(mm[1], mm[2]) } }   // never shown, never copied
       else if (e.ok && !e.dup && POS.test(e.text)) { const pm = POS.exec(e.text), theirs = { lat:+pm[2], lon:+pm[3], acc:+pm[4] }, ask = pm[1] === 'WHERE?';
         const m = { dir:'in', from:whoIs(e.from), text:(ask ? 'Asked how far: ' : 'Their position: ') + 'working it out…', time:now(), meta:'RECEIVED · POSITION · ' + sig }; msgs.push(m); drawMsgs();
         if (ask && !cur.practice) withFix(p => { if (p && cur) send('Here · my position sent (GPS ± ' + Math.round(p.acc) + ' m)', true, posWire(WHERE_IS, p)); gotPos(m, theirs, p) })
@@ -852,6 +863,7 @@ function tick(){
   if (!lastNote || Date.now() > lastNote.until) {
     if (st.phase === 'starting') $('lnText').textContent = 'Waking the camera…';
     else if (sending) $('lnText').textContent = 'Sending as light. Keep the phone still.';
+    else if (st.moving) $('lnText').textContent = 'Hold still: the phone is moving.';   // Nov 7 (MotionCheck)
     else if (hearing) $('lnText').textContent = 'Someone is sending. Hold.';
     else if (f >= 0.75) $('lnText').textContent = 'I see their Find light clearly. Leave this phone here.';
     else if (f >= 0.55) $('lnText').textContent = 'I see their Find light, faintly. Try moving a little.';

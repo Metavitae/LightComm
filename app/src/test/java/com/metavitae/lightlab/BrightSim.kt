@@ -1,6 +1,7 @@
 package com.metavitae.lightlab
 
 import java.util.Locale
+import kotlin.math.ln
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -46,6 +47,10 @@ object BrightSim {
     // and shakes this many blocks back and forth (about 3 times a second).
     @JvmField var wander = 0.0
     @JvmField var shake = 0.0
+    /** Nov 7: jerks of the hand, per second (each ~0.17 s: the aim jumps up to 3 blocks and the picture smears),
+     *  and whether the reader is told which pictures moved (as MotionCheck would mark them). */
+    @JvmField var jolts = 0.0
+    @JvmField var markJolts = false
     /** The reader also gets the follow-the-spot series (SpotTrack). */
     @JvmField var follow = false
     @JvmField var decExpFollows = false // the reader is told the real exposure (glare setting, Oct 14)
@@ -112,10 +117,16 @@ object BrightSim {
         val nFrames = ((total - phase) * cam.fps).toInt()
         val pr = 2 + r.nextInt(6); val pc = 1 + r.nextInt(5)   // patch centre
         // Drawn only for a moving spot, so the other tests keep their exact random numbers.
-        val moving = wander != 0.0 || shake != 0.0
+        val moving = wander != 0.0 || shake != 0.0 || jolts > 0
+        // jerks: start times, and the aim's jump after each
+        val jr = if (jolts > 0) Random(r.nextLong()) else Random(0); val jStart = ArrayList<Double>(); val jdr = ArrayList<Double>(); val jdc = ArrayList<Double>()
+        if (jolts > 0) { var tj = 0.0; while (true) { tj += -ln(1 - jr.nextDouble()) / jolts; if (tj >= total) break; jStart.add(tj); jdr.add((jr.nextDouble() * 2 - 1) * 3); jdc.add((jr.nextDouble() * 2 - 1) * 2) } }
+        fun joltAt(ts: Double) = jStart.indices.any { ts >= jStart[it] && ts < jStart[it] + 0.17 }
+        fun aimShift(ts: Double): Pair<Double, Double> { var a = 0.0; var b = 0.0; for (i in jStart.indices) if (ts >= jStart[i] + 0.17) { a += jdr[i]; b += jdc[i] }; return a to b }
         val ang = if (moving) r.nextDouble() * 2 * PI else 0.0; val ph = if (moving) r.nextDouble() * 2 * PI else 0.0
         fun gainsAt(ts: Double): DoubleArray { val u = ts / total
-            val cr = pr + wander * u * cos(ang) + shake * sin(2 * PI * 3.1 * ts + ph); val cc = pc + wander * u * sin(ang) + shake * sin(2 * PI * 2.3 * ts + 2 * ph)
+            val (sr, sc) = aimShift(ts)
+            val cr = (pr + sr).coerceIn(0.0, 11.0) + wander * u * cos(ang) + shake * sin(2 * PI * 3.1 * ts + ph); val cc = (pc + sc).coerceIn(0.0, 7.0) + wander * u * sin(ang) + shake * sin(2 * PI * 2.3 * ts + 2 * ph)
             return DoubleArray(nb * nc) { i -> val b = i / nc; val c = i % nc; exp(-((b - cr) * (b - cr) / (8.0 * patchWidth / 3) + (c - cc) * (c - cc) / (3.0 * patchWidth / 3))) } }
         var gains = gainsAt(0.0)
         val swing = 10.0
@@ -124,10 +135,12 @@ object BrightSim {
         val drift = DoubleArray(nb * nc)
         val series = Array(nb * nc + 1) { DoubleArray(nFrames) }
         val times = DoubleArray(nFrames)
+        val bad = BooleanArray(nFrames)
         for (f in 0 until nFrames) {
             val ts = phase + f / cam.fps
             times[f] = ts
             if (moving) gains = gainsAt(ts)
+            val jolt = jolts > 0 && joltAt(ts); bad[f] = jolt
             var whole = 0.0
             for (b in 0 until nb) {
                 val a = ts + cam.skew * (b + 0.5) / nb
@@ -141,13 +154,16 @@ object BrightSim {
                     val u = if (personAt < 0) 0.0 else { val x = ts - lead - personAt; when { x < 0 || x > 2.3 -> 0.0; x < 0.4 -> x / 0.4; x < 1.9 -> 1.0; else -> (2.3 - x) / 0.4 } }
                     val lin = bg[i] * fl * (1 - 0.2 * u) + drift[i] + swing * gains[i] * on * (1 - 0.5 * u)
                     // the camera's brightness curve (not straight), then rounding to whole steps after averaging
-                    val y = 255.0 * (max(0.0, lin) / 255.0).pow(0.8) + sigma * r.gauss()
+                    // a jerk smears the picture: edges slide, squares brighten and darken at random (light smeared across too)
+                    val linJ = if (jolt) lin * (0.4 + 1.2 * jr.nextDouble()) + swing * 3 * (jr.nextDouble() - 0.5) else lin
+                    val y = 255.0 * (max(0.0, linJ) / 255.0).pow(0.8) + sigma * r.gauss()
                     series[i][f] = y; whole += y
                 }
             }
             series[nb * nc][f] = whole / (nb * nc)
         }
-        return series.map { BrightDecoder.Series(times, it) }
+        val marks = if (markJolts && bad.any { it }) bad else null
+        return series.map { BrightDecoder.Series(times, it, marks) }
     }
 
     /** A short reply played by `torch`; returns (found?, read as got-it?, match) for the expected nonce, and the best match for a wrong nonce. */

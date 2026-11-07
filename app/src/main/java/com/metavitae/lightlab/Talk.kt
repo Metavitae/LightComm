@@ -89,7 +89,7 @@ class Talk(
     fun stopMessage(k: Int) { stoppedK.add(k); if (sendingK == k) sender.running = false }
     fun waiting(): Int = box.size - next
     /** Nov 6 (80-90 steps): long parts (over 2 min of blinking at the slowest speed) never got through, short ones did.
-     *  Weak link = at the slowest speed, or the last message needed more than one try (or never got through): the page
+     *  Weak link = the last message needed more than one try (or never got through) (Nov 7: no longer "at the slowest speed"): the page
      *  then cuts long messages into smaller parts (LC.partBytes), so one bad moment costs less. */
     @Volatile var weak = false
     /** How the camera sensor is turned (for drawing the zone map over the preview). */
@@ -131,7 +131,15 @@ class Talk(
     private var iSentLast = false; private var lastSentAt = 0.0; private var waitNote = ""
     private var otherMidParts = false; private var otherPartAt = 0.0
     private val ANSWER_WAIT = 45.0; private val PARTS_WAIT = 90.0
-    private val PART = Regex("^~[a-z](\\d+)/(\\d+) ")
+    private val PART = Regex("^~[a-z](\\d+)/(\\d+)[ ,]")
+    // Nov 7 (founder, route A): the parts of a long message go in a row. A part ending in "," = more parts follow:
+    // the sender doesn't wait and the reader stays quiet. The last part of a batch (" ") gets the one "got it"; if
+    // the reader is missing parts it answers "(MISS) g 2,5" and only those are sent again (the page does that).
+    private val MORE = Regex("^~[a-z]\\d+/\\d+,")
+    private val PARTG = Regex("^~([a-z])(\\d+)/(\\d+)[ ,]")
+    private class Got(val have: MutableSet<Int>, var at: Double, var missSent: Double = 0.0)
+    private val groups = HashMap<String, Got>()
+    private var moveLogAt = 0.0; private var moveLogN = 0L
     private fun laterPart(t: String) = PART.find(t)?.let { it.groupValues[1].toInt() > 1 } ?: false
     /** On a clash, give way only if this phone sent last (or nobody has sent yet): the other one keeps its turn. */
     private fun shouldYield() = iSentLast || lastSentAt == 0.0 && otherPartAt == 0.0 && !heardAny
@@ -329,6 +337,8 @@ class Talk(
             "short openings ${if (o.short) "on" else "off"}; reply ${f1(o.replyAfter)} s after a message ends; wait for reply ${f1(o.waitReply)} s; up to ${o.tries} tries\n" +
             "Short opening: pattern ${BrightFormat.SHORT_SYNC.size} steps, Barker ${if (BrightFormat.shortBarker) "on" else "off"}\n\n")
         while (tv != null && !tv.isAvailable && alive) Thread.sleep(50)
+        // Nov 7: the encryption keys take a moment to make (slow on purpose); make them before listening starts.
+        val kt = now(); LcKeys.keys(pass); log(String.format(Locale.US, "# keys ready in %.1f s\n", now() - kt))
         show("Starting camera...")
         openCam()
         if (!alive) { log("# stopped before listening began\n"); return }
@@ -384,6 +394,8 @@ class Talk(
                 }
             } else blackSince = 0.0
             followRoom()
+            // Nov 7: how often the phone moved (MotionCheck), once a minute when it did, to tune it from real runs.
+            if (now() - moveLogAt >= 60) { val m = rx.movedPictures; if (m > moveLogN) log("# phone moved in ${m - moveLogN} pictures in the last minute\n"); moveLogN = m; moveLogAt = now() }
             // Oct 26: no faded check here. Idle, the light around can simply go off (8T 05:00: background 47 -> 1.4 when the
             // room went dark) and it restarted the camera for nothing. The real fade (Oct 24) showed as missed got-its: checked while waiting.
             if (o.turns && o.first && !myTurn && next < box.size && now() - quietSince >= o.idle) { myTurn = true; log("# nothing heard for ${o.idle.toInt()} s: sending anyway\n") }
@@ -424,9 +436,12 @@ class Talk(
                     events?.stopped(next + 1); next++; quietSince = now(); continue
                 }
                 events?.sent(next + 1, text, ok, n, round)
+                val more = ok && MORE.containsMatchIn(text)
                 // After "got it", the other side gets the first turn to answer (Oct 14: both phones kept sending at once).
-                if (ok && !o.turns) { quietSince = now() + REPLY_PRIORITY; sendNow = false }
-                if (ok) { myTurn = false; iSentLast = true; lastSentAt = now() }
+                // Nov 7: not after a part with more to come: the next part goes at once.
+                if (more) sendNow = true
+                else if (ok && !o.turns) { quietSince = now() + REPLY_PRIORITY; sendNow = false }
+                if (ok) { if (!more) myTurn = false; iSentLast = true; lastSentAt = now() }
                 tries += n; if (ok) { delivered++; rounds.add(round) }
                 next++; quietSince = now()
                 if (next == box.size) {
@@ -446,9 +461,18 @@ class Talk(
             rx.inLink = if (r.seq == 0) BrightFormat.Link(r.nonce, r.phoneTag, r.pminMs, 0)
                         else rx.inLink?.let { it.copy(lastSeq = max(it.lastSeq, r.seq)) }
             if (!dup) { show("Read: \"${r.text}\""); iSentLast = false; heardAny = true
-                otherMidParts = PART.find(r.text)?.let { it.groupValues[1].toInt() < it.groupValues[2].toInt() } ?: false; otherPartAt = now() }
+                otherMidParts = MORE.containsMatchIn(r.text); otherPartAt = now() }   // Nov 7: more parts coming in a row
         }
         events?.heard(r, dup)
+        val pg = if (r.ok) PARTG.find(r.text) else null
+        if (pg != null) {
+            val key = "${r.phoneTag}|${pg.groupValues[1]}|${pg.groupValues[3]}"
+            groups.entries.removeAll { now() - it.value.at > 900 }
+            val g = groups.getOrPut(key) { Got(HashSet(), now()) }; g.have.add(pg.groupValues[2].toInt()); g.at = now()
+            if (MORE.containsMatchIn(r.text)) { log("# part ${pg.groupValues[2]} of ${pg.groupValues[3]} read, more coming: no reply yet\n"); return }
+        }
+        // A part of a run that could not be read: stay quiet too, the next part is coming (answering would miss its start).
+        if (!r.ok && otherMidParts && now() - otherPartAt < PARTS_WAIT) { log("# could not read it, but parts are coming in a row: no reply\n"); return }
         val ended = now() - (rx.newest() - r.endT)     // when the message ended, on this clock
         val noticed = now() - ended
         closeCam()
@@ -459,6 +483,16 @@ class Talk(
         log(String.format(Locale.US, "# replied %s to nonce %d%s%s: noticed %.1f s after it ended, reply started %.1f s after, took %.1f s, late %.0f us, %s\n",
             if (r.ok) "GOT IT" else "COULD NOT READ", r.nonce, if (r.seq > 0) " (short opening #${r.seq})" else "", if (dup) " (again: seen before)" else "",
             noticed, startedAfter, sec, lateUs, fail ?: "ok"))
+        // Nov 7: the last part of a batch: say which parts are still missing (only those come again).
+        if (pg != null) {
+            val n = pg.groupValues[3].toInt(); val key = "${r.phoneTag}|${pg.groupValues[1]}|$n"; val g = groups[key]
+            val miss = if (g == null) emptyList() else (1..n).filter { it !in g.have }
+            if (g != null && miss.isEmpty()) groups.remove(key)
+            else if (g != null && now() - g.missSent > 20) {
+                g.missSent = now(); enqueue("(MISS) ${pg.groupValues[1]} ${miss.joinToString(",")}"); sendNow = true
+                log("# parts missing from this message: ${miss.joinToString(",")}: asking for them\n")
+            }
+        }
         // Our turn now: send straight away (the other phone is listening), no need to open the camera first.
         if (o.turns && r.ok && !dup && next < box.size) { myTurn = true; sendNow = true; return }
         openCam()
@@ -532,6 +566,13 @@ class Talk(
             // Nov 2 (outside, 03:02): another camera user took the POCO's camera mid-send; the tries failed at once and the
             // camera never came back until the person opened the Camera app. Now: wait here and open it again before the next try.
             if (s.failure != null && "CAMERA" in s.failure.toString()) waitCameraBack(k)
+            if (s.failure == null && MORE.containsMatchIn(text) && k !in stoppedK) {
+                rx.expect = -1
+                usedUp(useShort, seq, true)
+                log(String.format(Locale.US, "SEND %d,%d,%s,%d,%d,%d,%d,%.1f,%.1f,SENT - MORE PARTS FOLLOW,0.0,%.1f,\"%s\"\n", k, attempt, if (useShort) "short#$seq" else "full",
+                    mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, now() - t0, text.replace("\"", "'")))
+                return Triple(true, attempt, now() - t0)
+            }
             var got: Boolean? = null; var seenAfter = 0.0
             val w = WaitLook()
             if (s.failure == null) {
@@ -569,7 +610,9 @@ class Talk(
                 mode.id, mode.levels, mode.perSec, s.nonce, s.seconds, listenAfter, outcome, seenAfter, if (got == true) now() - t0 else 0.0, text.replace("\"", "'")))
             if (got == true) {
                 if (w.n > 0) goodTop = w.topMin
-                weak = attempt > 1 || (o.auto && li == ladder.size - 1)
+                // Nov 7 (founder, route B): small parts only after a part failed, not just because the speed is slow.
+                // At 71 m the link was strong (signal 12-13) but one miss put it on 15/s, and that alone made 40-byte parts.
+                weak = attempt > 1
                 outLink = if (useShort) outLink!!.copy(lastSeq = seq) else BrightFormat.Link(s.nonce, BrightFormat.phoneTag(android.os.Build.MODEL), s.pminMs, 0)
                 if (attempt == 1) streak++ else streak = 0
                 if (o.auto && li > 0 && streak >= 2) { li--; streak = 0; log("# auto-speed: up to ${BrightFormat.MODES[ladder[li]].name}\n") }
