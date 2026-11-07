@@ -212,7 +212,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
     <button class="pill mono" onclick="show('vPresets')" aria-label="More ready-made messages">MORE</button>
     <button class="pill mono" style="font-weight:800;border-color:var(--hi);color:var(--hi);margin-left:auto" onclick="show('vListen')">Listen</button>
   </div>
-  <div style="padding:8px 16px 0"><button class="pill mono" id="testBtn" style="width:100%;font-weight:800" onclick="testTap()">TEST</button></div>
+  <div style="padding:8px 16px 0"><button class="pill mono" id="testBtn" style="width:100%;font-weight:800">TEST</button></div>
   <div id="inputRow">
     <input id="box" placeholder="Write to the circle" maxlength="400" enterkeyhint="send" onkeydown="if(event.key==='Enter'){sendBox()}">
     <button id="sendBtn" onclick="sendBox()" aria-label="Send as light"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="13" cy="13" r="4.5" fill="currentColor"/><path d="M13 2v3.5M13 20.5V24M2 13h3.5M20.5 13H24M5.2 5.2l2.5 2.5M18.3 18.3l2.5 2.5M5.2 20.8l2.5-2.5M18.3 7.7l2.5-2.5"/></svg></button>
@@ -292,6 +292,7 @@ input[type=range]{width:100%;accent-color:var(--ink)}
         <li>Stand where it beeps fast. Tap <b>OK</b>. Wait for <b>got it</b>, then <b>(COPY) OK</b>.</li>
       </ol>
     </div>
+    <button class="pill mono" style="font-weight:800" onclick="safetySheet()">FLASHING LIGHT SAFETY</button>
     <label class="cap">YOUR NAME (SHOWN TO PEOPLE YOU SWAP WITH)<input class="field" id="myName" maxlength="16" placeholder="Your name" oninput="setName(this.value)"></label>
     <div><div class="cap">LOOK</div><div class="seg" style="margin-top:8px">
       <button data-m="red" onclick="setMode('red')">Red night</button><button data-m="green" onclick="setMode('green')">Green night</button><button data-m="normal" onclick="setMode('normal')">Normal</button></div></div>
@@ -485,10 +486,10 @@ function drawChats(){ const l = $('chatList'); l.innerHTML = '';
     r.firstChild.textContent = m.toUpperCase(); r.lastChild.textContent = n; r.onclick = () => setListMode(m); l.appendChild(r) });
   drawChatSel() }
 /** Long press (half a second, finger still) or a tap. */
-function longPress(el, onLong, onTap){ let t = null, fired = false, x0 = 0, y0 = 0;
+function longPress(el, onLong, onTap, ms = 500){ let t = null, fired = false, x0 = 0, y0 = 0;
   const cancel = () => { if (t) { clearTimeout(t); t = null } };
   el.addEventListener('pointerdown', e => { fired = false; x0 = e.clientX; y0 = e.clientY; cancel();
-    t = setTimeout(() => { t = null; fired = true; if (store.get('lc.sounds', 'on') !== 'off') LC.buzz(25); onLong() }, 500) });
+    t = setTimeout(() => { t = null; fired = true; if (store.get('lc.sounds', 'on') !== 'off') LC.buzz(25); onLong() }, ms) });
   el.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 12) cancel() });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(k => el.addEventListener(k, cancel));
   el.addEventListener('contextmenu', e => e.preventDefault());
@@ -707,7 +708,7 @@ function testPos(L){ const sig = L.map(t => t[0]).join(',');
 function testLabel(){ const L = myTests(), i = testPos(L), b = $('testBtn'); if (!b) return;
   if (tCountTimer) { b.textContent = 'TEST · STARTS IN ' + tCount + ' S · TAP TO CANCEL'; return }
   b.textContent = (tSet === 'hand' ? 'HAND ' : '') + (tRun ? (tPause ? 'TEST · PAUSING AFTER ' : 'TEST · RUNNING ') + L[Math.min(i, L.length - 1)][0] + (tPause ? '' : ' · TAP TO PAUSE')
-    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0]) }
+    : i >= L.length ? 'TESTS DONE · TAP TO START OVER' : tStep && tStep.wait ? 'TEST ' + L[i][0] + (tStep.kind === 'hand' ? ' · READY TO HOLD? TAP' : ' · CAMERA DONE? TAP') : 'TEST · START AT ' + L[i][0] + (i > 0 ? ' · HOLD = START OVER' : '')) }
 function tLog(t){ try { LC.log('TEST ' + t) } catch (e) {} }
 function testTap(){ const L = myTests(); let i = testPos(L);
   if (!auto) { line('Turn auto-answer ON on both phones first (Settings). The tests wait for the copy back.', 8000); return }
@@ -725,6 +726,19 @@ function testTap(){ const L = myTests(); let i = testPos(L);
     clearInterval(tCountTimer); tCountTimer = null
     if (!cur) { testLabel(); return }   // left the chat meanwhile: not started
     tRun = true; tPause = false; tLog('run started at ' + L[i][0]); startTest(); testLabel() }, 1000) }
+// Nov 7 (founder, after the night test): "we need a way to reset the tests". A pause only stopped after the current
+// test and the next tap carried on, so the only way back to A1 was letting the whole list run out on both phones.
+// Hold TEST 2 s -> "Start over from A1?" -> this phone stops its test and every message it is still blinking
+// (copies too), clears its results, and the next tap starts at A1. Done on each phone (founder picked this route).
+function testReset(){ if (tCountTimer) { clearInterval(tCountTimer); tCountTimer = null }
+  if (tStep && tStep.kind === 'beacon') LC.beacon(tStep.prev);
+  tRun = false; tPause = false; tStep = null;
+  let n = 0; msgs.forEach(m => { if (m.dir === 'out' && m.state === 'pending') { (m.parts || []).forEach(p => { if (!p.ok) LC.stop(p.k) }); m.state = 'failed'; m.meta = 'STOPPED · TESTS STARTED OVER'; n++ } });
+  store.set(TK('lc.test.i'), 0); store.set(TK('lc.test.res'), {}); tLog('reset: start over at A1' + (n ? ', stopped ' + n + ' message' + (n > 1 ? 's' : '') : ''));
+  drawMsgs(); testLabel(); line('Tests start over at ' + myTests()[0][0] + (n ? '. Stopped ' + n + ' message' + (n > 1 ? 's' : '') + ' still sending' : '') + '. Do the same on the other phone.', 8000) }
+function testResetAsk(){ const L = myTests();
+  confirmSheet('Start over from ' + L[0][0] + '?', 'This phone stops its test and every message it is still sending, and forgets this round\'s results.\nDo it on the other phone too.', 'Start over', testReset) }
+longPress($('testBtn'), testResetAsk, testTap, 2000)
 // Only copies that came after this test sent (the same text from an earlier run doesn't count).
 // Nov 2: the sent message gone (stopped by the person) = no copy counts (indexOf -1 used to search the whole chat: false ok).
 const copyOf = (text, m0) => msgs.indexOf(m0) >= 0 && msgs.slice(msgs.indexOf(m0)).some(m => m.dir === 'in' && m.whole !== false && m.text === '(COPY) ' + text);
@@ -851,6 +865,15 @@ function tick(){
 }
 setInterval(tick, 400);
 show('vChats');
+// Nov 7 (Faro's Deep review v3, founder picked it): the torch blinks up to 30 times a second, inside the 3-30 Hz band that
+// flashing-light guidance links to seizures. Shown once after the opening until "I understand"; Settings opens it again.
+function safetySheet(){ sheet('Before you use the light', [{ label: 'I understand', fn: () => store.set('lc.safety', 1) }],
+  'LightComm blinks the phone\'s flashlight fast, up to 30 times a second.\n\n' +
+  '• Fast flashing can cause seizures in people with photosensitive epilepsy. If you or someone near you has it, do not use LightComm.\n' +
+  '• Never point the light at anyone\'s eyes, and do not look into it up close.\n' +
+  '• Other people can see the light. It is not secret, and this test version is not for emergencies.\n\n' +
+  'You can read this again in Settings.') }
+if (!store.get('lc.safety', 0)) setTimeout(safetySheet, 600);
 </script>
 </body>
 </html>

@@ -445,6 +445,45 @@ object BrightFormat {
 
     class Send(val wave: Wave, val layout: Layout, val bodySyms: IntArray, val bodyCoded: IntArray, val pminMs: Int, val nonce: Int)
 
+    /**
+     * Nov 7 (Faro's review: "measure the wrong-text risk"): the 16-bit check lets about 1 damaged read in 65,000 through,
+     * and a far read tries up to 6 repairs per try, so a wrong text was possible (sim: 1 in ~3,500 messages when almost
+     * every try fails). Second guard, nothing added to the light: the text must be one the sending phone could have made.
+     * Packed: it unpacks AND packs back to exactly these bytes. Plain: strict UTF-8. Both: only characters a person can
+     * type (no control codes except new line, tab and the ready-made-message mark, no broken emoji, no unassigned codes).
+     * Sim: lets 1 in ~1,400 garbage texts through, so together about 1 wrong in 90 million repairs.
+     */
+    fun textIfPlausible(bytes: ByteArray, packed: Boolean): String? {
+        val t = if (packed) (TextPack.unpack(bytes) ?: return null) else try {
+            Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+        } catch (e: Exception) { return null }
+        if (!typeable(t)) return null
+        if (packed && TextPack.pack(t)?.contentEquals(bytes) != true) return null
+        return t
+    }
+    /** Ready-made messages are the mark \u001e and one character (app.html presetWire). */
+    fun typeable(t: String): Boolean {
+        var i = 0
+        while (i < t.length) {
+            val c = t[i]
+            if (Character.isSurrogate(c) && (Character.charCount(t.codePointAt(i)) == 1)) return false
+            val cp = t.codePointAt(i)
+            val ok = when {
+                cp == 10 || cp == 9 || cp == 13 -> true
+                cp == 0x1e -> i == 0 && t.length == 2
+                cp < 32 || cp == 127 -> false
+                else -> when (Character.getType(cp)) {
+                    Character.UNASSIGNED.toInt(), Character.PRIVATE_USE.toInt(), Character.CONTROL.toInt(), Character.SURROGATE.toInt() -> false
+                    else -> true
+                }
+            }
+            if (!ok) return false
+            i += Character.charCount(cp)
+        }
+        return true
+    }
+
     fun utf8(text: String): ByteArray {
         val b = text.toByteArray(Charsets.UTF_8)
         if (b.size <= MAX_BYTES) return b
@@ -887,7 +926,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
             val plain = BrightFormat.softDecode(llr)
             val bytes = ByteArray(len) { (bitsInt(plain, it * 8, 8) xor (ks[it + 1].toInt() and 0xff)).toByte() }
             val crc = ((bitsInt(plain, len * 8, 8) xor (ks[len + 1].toInt() and 0xff)) shl 8) or (bitsInt(plain, len * 8 + 8, 8) xor (ks[len + 2].toInt() and 0xff))
-            return if (crc == BrightFormat.crc16(bytes)) (if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8)) else null
+            return if (crc == BrightFormat.crc16(bytes)) BrightFormat.textIfPlausible(bytes, packed) else null
         }
         val passLlr = ArrayList<DoubleArray>()
         fun read(body: IntArray): Pair<IntArray, String?> {
@@ -906,7 +945,7 @@ class BrightDecoder(private val pass: String, private val expSec: Double) {
                 for (k in 0..1) if (shadow[k] == null && crc shr (16 - shadowBits[k]) == BrightFormat.crc16(bytes) shr (16 - shadowBits[k]))
                     (if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8))?.let { shadow[k] = it }
                 if (crc == BrightFormat.crc16(bytes)) {
-                    val t = if (packed) TextPack.unpack(bytes) else String(bytes, Charsets.UTF_8)
+                    val t = BrightFormat.textIfPlausible(bytes, packed)
                     if (t != null) return coded to t
                 }
             }
