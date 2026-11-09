@@ -131,6 +131,7 @@ class Talk(
     private var iSentLast = false; private var lastSentAt = 0.0; private var waitNote = ""
     private var otherMidParts = false; private var otherPartAt = 0.0
     private val ANSWER_WAIT = 45.0; private val PARTS_WAIT = 90.0
+    private val RESUME_LOOK = 3.5     // after a failed read: seconds after its end before answering (busy() looks back 1.2 s)
     private val PART = Regex("^~[a-z](\\d+)/(\\d+)[ ,]")
     // Nov 7 (founder, route A): the parts of a long message go in a row. A part ending in "," = more parts follow:
     // the sender doesn't wait and the reader stays quiet. The last part of a batch (" ") gets the one "got it"; if
@@ -475,6 +476,12 @@ class Talk(
         if (!r.ok && otherMidParts && now() - otherPartAt < PARTS_WAIT) { log("# could not read it, but parts are coming in a row: no reply\n"); return }
         val ended = now() - (rx.newest() - r.endT)     // when the message ended, on this clock
         val noticed = now() - ended
+        // Nov 8 (131 m): a failed read can't tell it was part 1 of a run, and the next part starts about 1.3 s after it.
+        // Answering blinked over that part's opening, so it was lost. Look first: light blinking again = stay quiet, keep reading.
+        if (!r.ok) {
+            while (alive && now() < ended + RESUME_LOOK) Thread.sleep(100)
+            if (rx.hearing || rx.busy()) { log("# could not read it, but the light is blinking again: no reply, still reading\n"); return }
+        }
         closeCam()
         val wait = ended + o.replyAfter - now()
         if (wait > 0) Thread.sleep((wait * 1000).toLong())

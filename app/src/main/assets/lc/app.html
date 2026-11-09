@@ -87,7 +87,8 @@ input[type=range]{width:100%;accent-color:var(--ink)}
 .step.done{border-color:var(--hi)}.step.done .st{color:var(--hi)}
 .seg button.sel{border-color:var(--ink);background:var(--ink);color:var(--on);font-weight:800}
 /* Oct 30 (founder: "like whatsapp or telegram"): long-press to select, a bar of actions, sheets that slide up from the bottom. */
-.card,.bub{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.card,.bub,#testBtn{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#testBtn{touch-action:none}
 .card.sel{border-color:var(--hi);background:var(--panel2)}
 .in.sel .bub,.out.sel .bub{outline:2px solid var(--hi);outline-offset:3px}
 .in.hit .bub,.out.hit .bub{outline:2px dashed var(--hi);outline-offset:3px}
